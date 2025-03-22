@@ -1,0 +1,21 @@
+# UI dependencies
+PySide6>=6.4.0
+pillow>=9.3.0
+
+# Audio dependencies
+sounddevice>=0.4.5
+numpy>=1.23.0
+wave>=0.0.2
+
+# Transcription dependencies
+faster-whisper>=0.6.0
+torch>=2.0.0
+
+# Windows-specific dependencies
+pywin32>=303; platform_system=="Windows"
+
+# Build dependencies
+pyinstaller>=5.7.0
+
+# Icon generation dependencies
+cairosvg>=2.5.2 

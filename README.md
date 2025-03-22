@@ -79,6 +79,5 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Acknowledgments
 
-- [Whisper](https://github.com/openai/whisper) - Speech recognition model
 - [faster-whisper](https://github.com/guillaumekln/faster-whisper) - Optimized Whisper implementation
 - [PySide6](https://wiki.qt.io/Qt_for_Python) - Qt bindings for Python 

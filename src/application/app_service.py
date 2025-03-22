@@ -11,12 +11,13 @@ import numpy as np
 from PySide6.QtCore import QObject
 from typing import Optional
 
-from ..domain.settings import Settings
+from ..domain.settings import Settings, LLMSettings
 from ..infrastructure.persistence.settings_repository import SettingsRepository
 from ..infrastructure.audio.recorder import AudioRecorder
 from ..infrastructure.hotkeys.windows import WindowsHotkeyHandler
 from ..infrastructure.hotkeys.base import HotkeyHandler
 from ..infrastructure.transcription.transcriber import Transcriber
+from ..infrastructure.llm.processor import TextProcessor
 from .recording_service import RecordingService
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,10 @@ class ApplicationService(QObject):
         # Load settings
         self.settings_repository = SettingsRepository()
         self.settings = self.settings_repository.load()
+        
+        # If LLM settings not initialized, set default values
+        if not hasattr(self.settings, 'llm') or self.settings.llm is None:
+            self.settings.llm = LLMSettings()
         
         # Test microphone access
         self._test_microphone_access()
@@ -49,6 +54,15 @@ class ApplicationService(QObject):
             device=self.settings.transcription.device,
             compute_type="int8"
         )
+        
+        # Initialize LLM processor if enabled
+        self.text_processor = None
+        if self.settings.llm.enabled:
+            try:
+                self.text_processor = TextProcessor(api_url=self.settings.llm.api_url)
+                logger.info(f"Initialized LLM processor with API at {self.settings.llm.api_url}")
+            except Exception as e:
+                logger.error(f"Error initializing LLM processor: {e}")
         
         # Initialize recording service
         self.recording_service = RecordingService(
@@ -148,6 +162,37 @@ class ApplicationService(QObject):
         self.transcriber.model_size = self.settings.transcription.model
         self.transcriber.device = self.settings.transcription.device
         
+        # Check if LLM settings changed
+        if not hasattr(old_settings, 'llm') or old_settings.llm is None:
+            old_llm_enabled = False
+            old_llm_api_url = None
+        else:
+            old_llm_enabled = old_settings.llm.enabled
+            old_llm_api_url = old_settings.llm.api_url
+            
+        if not hasattr(self.settings, 'llm') or self.settings.llm is None:
+            self.settings.llm = LLMSettings()
+            
+        # Update LLM processor if needed
+        if ((old_llm_enabled != self.settings.llm.enabled) or 
+            (self.settings.llm.enabled and old_llm_api_url != self.settings.llm.api_url)):
+            
+            logger.debug("LLM settings changed, updating text processor")
+            
+            if self.settings.llm.enabled:
+                try:
+                    self.text_processor = TextProcessor(api_url=self.settings.llm.api_url)
+                    self.recording_service.text_processor = self.text_processor
+                    logger.info(f"Updated LLM processor with API at {self.settings.llm.api_url}")
+                except Exception as e:
+                    logger.error(f"Error updating LLM processor: {e}")
+                    self.text_processor = None
+                    self.recording_service.text_processor = None
+            else:
+                self.text_processor = None
+                self.recording_service.text_processor = None
+                logger.info("Disabled LLM processor")
+            
         # Re-register hotkeys
         self.recording_service._register_hotkeys()
     

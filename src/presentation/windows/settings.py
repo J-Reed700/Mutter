@@ -66,6 +66,7 @@ class SettingsWindow(QMainWindow):
         tabs.addTab(self._create_hotkeys_tab(), "Hotkeys")
         tabs.addTab(self._create_audio_tab(), "Audio")
         tabs.addTab(self._create_transcription_tab(), "Transcription")
+        tabs.addTab(self._create_llm_tab(), "LLM Processing")
         tabs.addTab(self._create_appearance_tab(), "Appearance")
         
         # Add bottom buttons
@@ -142,6 +143,26 @@ class SettingsWindow(QMainWindow):
         pause_layout.addRow("", pause_desc)
         
         layout.addWidget(pause_group)
+        
+        # Process text hotkey
+        process_group = QGroupBox("Process Text Hotkey")
+        process_layout = QFormLayout(process_group)
+        process_layout.setContentsMargins(15, 20, 15, 15)
+        process_layout.setSpacing(10)
+        
+        self.process_hotkey_edit = QKeySequenceEdit(
+            self.settings.hotkeys.process_text_key or QKeySequence("Ctrl+Shift+P")
+        )
+        self.process_hotkey_edit.setMinimumWidth(200)
+        process_layout.addRow("Process Text Key:", self.process_hotkey_edit)
+        
+        # Add a description
+        process_desc = QLabel("Press this key combination to process transcribed text with LLM")
+        process_desc.setStyleSheet("color: #666666; font-size: 12px;")
+        process_layout.addRow("", process_desc)
+        
+        layout.addWidget(process_group)
+        
         layout.addStretch()
         
         return widget
@@ -294,6 +315,110 @@ class SettingsWindow(QMainWindow):
         
         return widget
     
+    def _create_llm_tab(self) -> QWidget:
+        """Create the LLM settings tab"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(15, 15, 15, 15)
+        
+        # Help text at the top
+        help_label = QLabel(
+            "Configure the local LLM processing for transcriptions. "
+            "This requires a local LLM server running."
+        )
+        help_label.setWordWrap(True)
+        layout.addWidget(help_label)
+        
+        # LLM Enable/Disable
+        enable_group = QGroupBox("Enable LLM Processing")
+        enable_layout = QFormLayout(enable_group)
+        enable_layout.setContentsMargins(15, 20, 15, 15)
+        enable_layout.setSpacing(10)
+        
+        self.llm_enabled_check = QCheckBox("Enable LLM processing")
+        self.llm_enabled_check.setChecked(self.settings.llm.enabled)
+        self.llm_enabled_check.toggled.connect(self._on_llm_enabled_toggled)
+        enable_layout.addRow("", self.llm_enabled_check)
+        
+        enable_desc = QLabel("Process transcriptions with a local LLM server")
+        enable_desc.setStyleSheet("color: #666666; font-size: 12px;")
+        enable_layout.addRow("", enable_desc)
+        
+        layout.addWidget(enable_group)
+        
+        # LLM Server Settings
+        server_group = QGroupBox("LLM Server Settings")
+        server_layout = QFormLayout(server_group)
+        server_layout.setContentsMargins(15, 20, 15, 15)
+        server_layout.setSpacing(10)
+        
+        self.llm_api_url_edit = QComboBox()
+        self.llm_api_url_edit.setEditable(True)
+        self.llm_api_url_edit.setMinimumWidth(300)
+        self.llm_api_url_edit.addItems([
+            "http://localhost:8080/v1",
+            "http://localhost:11434/v1",
+            "http://localhost:5000/v1",
+        ])
+        self.llm_api_url_edit.setCurrentText(self.settings.llm.api_url)
+        server_layout.addRow("API URL:", self.llm_api_url_edit)
+        
+        self.llm_model_edit = QComboBox()
+        self.llm_model_edit.setEditable(True)
+        self.llm_model_edit.setMinimumWidth(200)
+        self.llm_model_edit.addItems([
+            "llama3",
+            "mistral",
+            "codellama",
+            "phi3",
+            "mixtral"
+        ])
+        self.llm_model_edit.setCurrentText(self.settings.llm.model)
+        server_layout.addRow("Model:", self.llm_model_edit)
+        
+        # Test LLM Connection button
+        test_button = QPushButton("Test Connection")
+        test_button.setStyleSheet("padding: 5px 10px;")
+        test_button.clicked.connect(self._test_llm_connection)
+        server_layout.addRow("", test_button)
+        
+        layout.addWidget(server_group)
+        
+        # LLM Processing Settings
+        processing_group = QGroupBox("Processing Settings")
+        processing_layout = QFormLayout(processing_group)
+        processing_layout.setContentsMargins(15, 20, 15, 15)
+        processing_layout.setSpacing(10)
+        
+        self.processing_type_combo = QComboBox()
+        self.processing_type_combo.addItem("Summarize", "summarize")
+        self.processing_type_combo.addItem("Extract Action Items", "action_items")
+        self.processing_type_combo.addItem("Key Points", "key_points")
+        self.processing_type_combo.addItem("Custom Prompt", "custom")
+        
+        # Set current item based on settings
+        for i in range(self.processing_type_combo.count()):
+            if self.processing_type_combo.itemData(i) == self.settings.llm.default_processing_type:
+                self.processing_type_combo.setCurrentIndex(i)
+                break
+                
+        processing_layout.addRow("Default Processing:", self.processing_type_combo)
+        
+        # Custom prompt text edit
+        custom_prompt_desc = QLabel("You can use {text} as a placeholder for the transcribed text")
+        custom_prompt_desc.setStyleSheet("color: #666666; font-size: 12px;")
+        processing_layout.addRow("", custom_prompt_desc)
+        
+        layout.addWidget(processing_group)
+        
+        # Disable the settings if LLM is not enabled
+        server_group.setEnabled(self.settings.llm.enabled)
+        processing_group.setEnabled(self.settings.llm.enabled)
+        
+        layout.addStretch()
+        
+        return widget
+    
     def _create_appearance_tab(self) -> QWidget:
         """Create the appearance settings tab"""
         widget = QWidget()
@@ -366,6 +491,8 @@ class SettingsWindow(QMainWindow):
         self.settings.hotkeys.record_key = self.record_hotkey_edit.keySequence()
         pause_seq = self.pause_hotkey_edit.keySequence()
         self.settings.hotkeys.pause_key = pause_seq if not pause_seq.isEmpty() else None
+        process_seq = self.process_hotkey_edit.keySequence()
+        self.settings.hotkeys.process_text_key = process_seq if not process_seq.isEmpty() else None
         
         # Update audio settings
         self.settings.audio.input_device = self.device_combo.currentData()
@@ -376,6 +503,12 @@ class SettingsWindow(QMainWindow):
         self.settings.transcription.model = self.model_combo.currentText()
         self.settings.transcription.device = self.device_type_combo.currentText()
         self.settings.transcription.language = self.language_combo.currentData()
+        
+        # Update LLM settings
+        self.settings.llm.enabled = self.llm_enabled_check.isChecked()
+        self.settings.llm.api_url = self.llm_api_url_edit.currentText()
+        self.settings.llm.model = self.llm_model_edit.currentText()
+        self.settings.llm.default_processing_type = self.processing_type_combo.currentData()
         
         # Save appearance settings
         # TODO: Store appearance settings to the settings object
@@ -398,6 +531,68 @@ class SettingsWindow(QMainWindow):
         
         if confirm == QMessageBox.Yes:
             QApplication.quit()
+
+    def _on_llm_enabled_toggled(self, enabled):
+        """Handle LLM enabled checkbox toggle"""
+        # Find the LLM tab widgets
+        for i in range(self.layout().count()):
+            widget = self.layout().itemAt(i).widget()
+            if isinstance(widget, QTabWidget):
+                tab_widget = widget
+                # Find the LLM tab
+                for j in range(tab_widget.count()):
+                    if tab_widget.tabText(j) == "LLM Processing":
+                        llm_tab = tab_widget.widget(j)
+                        # Enable/disable all group boxes except the first one
+                        for k in range(llm_tab.layout().count()):
+                            item = llm_tab.layout().itemAt(k)
+                            if item and item.widget() and isinstance(item.widget(), QGroupBox):
+                                if k > 0:  # Skip the first group box (enable/disable)
+                                    item.widget().setEnabled(enabled)
+    
+    def _test_llm_connection(self):
+        """Test the LLM server connection"""
+        from ...infrastructure.llm.processor import TextProcessor
+        
+        cursor = self.cursor()
+        cursor.setShape(Qt.WaitCursor)
+        self.setCursor(cursor)
+        
+        try:
+            processor = TextProcessor(api_url=self.llm_api_url_edit.currentText())
+            if processor.available:
+                models = processor.get_available_models()
+                if models:
+                    QMessageBox.information(
+                        self,
+                        "Connection Successful",
+                        f"Successfully connected to LLM server.\nAvailable models: {', '.join(models[:5])}",
+                        QMessageBox.Ok
+                    )
+                else:
+                    QMessageBox.information(
+                        self,
+                        "Connection Successful",
+                        "Successfully connected to LLM server, but no models found.",
+                        QMessageBox.Ok
+                    )
+            else:
+                QMessageBox.warning(
+                    self,
+                    "Connection Failed",
+                    "Could not connect to LLM server. Please check the API URL and ensure the server is running.",
+                    QMessageBox.Ok
+                )
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Connection Error",
+                f"Error connecting to LLM server: {str(e)}",
+                QMessageBox.Ok
+            )
+        finally:
+            cursor.setShape(Qt.ArrowCursor)
+            self.setCursor(cursor)
 
 class SettingsDialog(QDialog):
     hotkey_changed = Signal(object)  # Emits QKeySequence

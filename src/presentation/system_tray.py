@@ -51,6 +51,15 @@ class SystemTrayIcon(QSystemTrayIcon):
         self.recent_transcription_action.setFont(italic_font)
         self.menu.addAction(self.recent_transcription_action)
         
+        # Add recent LLM processed text action
+        self.recent_llm_action = QAction("No LLM processed text")
+        self.recent_llm_action.setEnabled(False)
+        llm_font = QFont()
+        llm_font.setPointSize(9)
+        llm_font.setItalic(True)
+        self.recent_llm_action.setFont(llm_font)
+        self.menu.addAction(self.recent_llm_action)
+        
         # Add copy to clipboard action with icon
         self.copy_action = QAction("Copy to Clipboard")
         self.copy_action.setEnabled(False)
@@ -60,6 +69,14 @@ class SystemTrayIcon(QSystemTrayIcon):
         if not clipboard_icon.isNull():
             self.copy_action.setIcon(clipboard_icon)
         self.menu.addAction(self.copy_action)
+        
+        # Add copy LLM result to clipboard action
+        self.copy_llm_action = QAction("Copy LLM Result to Clipboard")
+        self.copy_llm_action.setEnabled(False)
+        self.copy_llm_action.triggered.connect(self.copy_llm_to_clipboard)
+        if not clipboard_icon.isNull():
+            self.copy_llm_action.setIcon(clipboard_icon)
+        self.menu.addAction(self.copy_llm_action)
         
         self.menu.addSeparator()
         
@@ -87,8 +104,9 @@ class SystemTrayIcon(QSystemTrayIcon):
         # Set tooltip
         self.setToolTip("Voice Recorder\nReady")
         
-        # Store the last transcription
+        # Store the last transcription and processed text
         self.last_transcription = ""
+        self.last_llm_result = ""
         
         # Connect activation signal for double-click
         self.activated.connect(self.on_activated)
@@ -216,6 +234,31 @@ class SystemTrayIcon(QSystemTrayIcon):
             QSystemTrayIcon.MessageIcon.Information,
             3000  # Show for 3 seconds
         )
+    
+    @Slot(object)
+    def on_llm_processing_complete(self, result):
+        """Handle LLM processing complete
+        
+        Args:
+            result: LLMProcessingResult object
+        """
+        # Store the LLM result
+        self.last_llm_result = result.processed_text
+        
+        # Update menu items
+        preview = result.processed_text[:50] + "..." if len(result.processed_text) > 50 else result.processed_text
+        self.recent_llm_action.setText(preview)
+        self.recent_llm_action.setEnabled(True)
+        self.copy_llm_action.setEnabled(True)
+        
+        # Show notification with processed text
+        preview_for_notification = result.processed_text[:75] + "..." if len(result.processed_text) > 75 else result.processed_text
+        self.showMessage(
+            f"LLM Processing ({result.processing_type}) Complete",
+            f"{preview_for_notification}",
+            QSystemTrayIcon.MessageIcon.Information,
+            3000  # Show for 3 seconds
+        )
 
     def copy_to_clipboard(self):
         """Copy the last transcription to clipboard"""
@@ -225,6 +268,15 @@ class SystemTrayIcon(QSystemTrayIcon):
         clipboard = QApplication.clipboard()
         clipboard.setText(self.last_transcription)
         logger.debug("Copied transcription to clipboard")
+    
+    def copy_llm_to_clipboard(self):
+        """Copy the last LLM processed text to clipboard"""
+        if not self.last_llm_result:
+            return
+            
+        clipboard = QApplication.clipboard()
+        clipboard.setText(self.last_llm_result)
+        logger.debug("Copied LLM result to clipboard")
 
     def show_settings(self):
         """Show the settings window"""

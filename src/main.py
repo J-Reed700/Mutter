@@ -75,6 +75,9 @@ class Application:
             self.app_service.recording_service.recording_failed.connect(self.tray.on_recording_failed)
             self.app_service.recording_service.transcription_complete.connect(self.tray.on_transcription_complete)
             
+            # Connect LLM processing signal
+            self.app_service.recording_service.llm_processing_complete.connect(self.tray.on_llm_processing_complete)
+            
             # Connect settings
             self.tray.settings_action.triggered.connect(self.show_settings)
             
@@ -95,6 +98,22 @@ class Application:
                 self.tray.showMessage(
                     "Ready",
                     f"Hotkey: {default_hotkey.toString()}",
+                    QSystemTrayIcon.MessageIcon.Information,
+                    2000
+                )
+            
+            # Register process text hotkey if configured
+            if self.app_service.settings.hotkeys.process_text_key and not self.app_service.settings.hotkeys.process_text_key.isEmpty():
+                self.app_service.recording_service.set_process_text_hotkey(self.app_service.settings.hotkeys.process_text_key)
+                logger.info(f"Using configured process text hotkey: {self.app_service.settings.hotkeys.process_text_key.toString()}")
+            else:
+                # Set default process text hotkey
+                default_process_hotkey = QKeySequence("Ctrl+Shift+P")
+                self.app_service.recording_service.set_process_text_hotkey(default_process_hotkey)
+                logger.info(f"Using default process text hotkey: {default_process_hotkey.toString()}")
+                self.tray.showMessage(
+                    "LLM Processing",
+                    f"Hotkey: {default_process_hotkey.toString()}",
                     QSystemTrayIcon.MessageIcon.Information,
                     2000
                 )
@@ -174,6 +193,9 @@ def main():
         )
         app.app_service.recording_service.recording_failed.connect(
             lambda error: logger.error(f"Recording failed: {error}")
+        )
+        app.app_service.recording_service.llm_processing_complete.connect(
+            lambda result: logger.info(f"LLM processing complete: {result.processing_type}")
         )
         
         # Run the application

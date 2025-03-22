@@ -57,6 +57,8 @@ class WindowsHotkeyHandler(HotkeyHandler):
         self._hwnd: Optional[int] = None
         self._message_thread: Optional[threading.Thread] = None
         self._is_key_held = False  # Track key state
+        self.registered_process_text_hotkey: Optional[QKeySequence] = None
+        self.process_text_hotkey_id: Optional[int] = None
         self._setup_message_window()
 
     def _setup_message_window(self) -> None:
@@ -73,6 +75,12 @@ class WindowsHotkeyHandler(HotkeyHandler):
                 # For WM_HOTKEY, Windows doesn't provide separate down/up events
                 # We use a toggle pattern: first press starts recording, second press stops
                 logger.debug(f"Hotkey message received: ID={hotkey_id}, lparam={hex(lparam)}")
+                
+                # Check if this is the process text hotkey
+                if self.process_text_hotkey_id is not None and hotkey_id == self.process_text_hotkey_id:
+                    logger.debug("Process text hotkey pressed")
+                    self.process_text_hotkey_pressed.emit()
+                    return True
                 
                 # Try to find which hotkey this corresponds to
                 key_sequence = None
@@ -305,43 +313,84 @@ class WindowsHotkeyHandler(HotkeyHandler):
                 logger.error(f"Error unregistering hotkey {key_sequence}: {e}")
                 return False
 
-    def shutdown(self) -> None:
-        """Gracefully shuts down the hotkey handler.
+    def register_process_text_hotkey(self, key_sequence: QKeySequence) -> bool:
+        """Register a hotkey for text processing
         
-        Should be called before application exit.
+        Args:
+            key_sequence: The key sequence to register
+            
+        Returns:
+            bool: True if registration succeeded, False otherwise
         """
-        logger.debug("Shutting down hotkey handler")
-        with self._lock:
-            # Unregister all hotkeys
-            for key_sequence in list(self.registered_hotkeys.keys()):
-                logger.debug(f"Unregistering hotkey: {key_sequence.toString()}")
-                self.unregister_hotkey(key_sequence)
+        if not self._validate_key_sequence(key_sequence):
+            logger.warning(f"Invalid key sequence for process text hotkey: {key_sequence}")
+            return False
             
-            # Try to terminate message loop by posting a quit message
-            if self._hwnd:
-                try:
-                    win32gui.PostQuitMessage(0)
-                    logger.debug("Posted quit message to hotkey window")
-                except Exception as e:
-                    logger.error(f"Error posting quit message: {e}")
-            
-            # Destroy window if it exists
-            if self._hwnd:
-                try:
-                    win32gui.DestroyWindow(self._hwnd)
-                    logger.debug("Destroyed hotkey window")
-                    self._hwnd = None
-                except Exception as e:
-                    logger.error(f"Error destroying window: {e}")
-
-            # Wait for message thread to finish
-            if self._message_thread and self._message_thread.is_alive():
-                logger.debug("Waiting for message thread to finish")
-                self._message_thread.join(timeout=2.0)
-                if self._message_thread.is_alive():
-                    logger.warning("Message thread did not terminate cleanly")
+        # Unregister previous process text hotkey if it exists
+        if self.registered_process_text_hotkey and self.process_text_hotkey_id:
+            try:
+                if unregister_hotkey_func(self._hwnd, self.process_text_hotkey_id):
+                    logger.debug(f"Unregistered previous process text hotkey: {self.registered_process_text_hotkey.toString()}")
                 else:
-                    logger.debug("Message thread terminated successfully")
+                    logger.warning(f"Failed to unregister previous process text hotkey: {self.registered_process_text_hotkey.toString()}")
+            except Exception as e:
+                logger.error(f"Error unregistering process text hotkey: {e}")
+        
+        # Generate a new ID for this hotkey
+        hotkey_id = self.next_id
+        self.next_id += 1
+        
+        # Convert Qt key sequence to Win32 modifiers and key code
+        modifiers, vk = self._convert_key_sequence(key_sequence)
+        
+        # Add the MOD_NOREPEAT flag for instant triggering
+        modifiers |= MOD_NOREPEAT
+        
+        # Try to register the hotkey
+        try:
+            if register_hotkey_func(self._hwnd, hotkey_id, modifiers, vk):
+                logger.info(f"Registered process text hotkey: {key_sequence.toString()} with ID {hotkey_id}")
+                self.registered_process_text_hotkey = key_sequence
+                self.process_text_hotkey_id = hotkey_id
+                return True
+            else:
+                logger.error(f"Failed to register process text hotkey: {key_sequence.toString()}")
+                return False
+        except Exception as e:
+            logger.error(f"Error registering process text hotkey: {e}")
+            return False
+
+    def shutdown(self) -> None:
+        """Clean up resources before shutdown."""
+        logger.debug("Shutting down hotkey handler")
+        
+        # Unregister all hotkeys
+        for key_seq, hotkey_id in list(self.registered_hotkeys.items()):
+            try:
+                if unregister_hotkey_func(self._hwnd, hotkey_id):
+                    logger.debug(f"Unregistered hotkey: {key_seq.toString()}")
+                else:
+                    logger.warning(f"Failed to unregister hotkey: {key_seq.toString()}")
+            except Exception as e:
+                logger.error(f"Error unregistering hotkey: {e}")
+        
+        # Unregister process text hotkey if it exists
+        if self.registered_process_text_hotkey and self.process_text_hotkey_id:
+            try:
+                if unregister_hotkey_func(self._hwnd, self.process_text_hotkey_id):
+                    logger.debug(f"Unregistered process text hotkey: {self.registered_process_text_hotkey.toString()}")
+                else:
+                    logger.warning(f"Failed to unregister process text hotkey: {self.registered_process_text_hotkey.toString()}")
+            except Exception as e:
+                logger.error(f"Error unregistering process text hotkey: {e}")
+        
+        # Close the window and terminate the message thread
+        if self._hwnd:
+            try:
+                win32gui.PostMessage(self._hwnd, win32con.WM_CLOSE, 0, 0)
+                logger.debug("Posted WM_CLOSE to message window")
+            except Exception as e:
+                logger.error(f"Error posting WM_CLOSE: {e}")
 
     def __del__(self):
         """Cleanup registered hotkeys on deletion."""

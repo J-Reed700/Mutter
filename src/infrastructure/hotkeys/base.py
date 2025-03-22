@@ -11,10 +11,12 @@ class QObjectABCMeta(type(QObject), ABCMeta):
 class HotkeyHandler(QObject, metaclass=QObjectABCMeta):
     hotkey_pressed = Signal()
     hotkey_released = Signal()
+    process_text_hotkey_pressed = Signal()  # New signal for processing text
     
     def __init__(self):
         super().__init__()
         self.registered_hotkeys: Dict[QKeySequence, Any] = {}
+        self.registered_process_text_hotkey: QKeySequence = None
     
     @abstractmethod
     def register_hotkey(self, key_sequence: QKeySequence) -> bool:
@@ -22,4 +24,16 @@ class HotkeyHandler(QObject, metaclass=QObjectABCMeta):
     
     @abstractmethod
     def unregister_hotkey(self, key_sequence: QKeySequence) -> bool:
+        pass
+    
+    @abstractmethod
+    def register_process_text_hotkey(self, key_sequence: QKeySequence) -> bool:
+        """Register a hotkey for text processing
+        
+        Args:
+            key_sequence: The key sequence to register
+            
+        Returns:
+            bool: True if registration succeeded, False otherwise
+        """
         pass 

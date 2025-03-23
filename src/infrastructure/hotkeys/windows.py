@@ -123,7 +123,7 @@ class WindowsHotkeyHandler(HotkeyHandler):
             win32gui.RegisterClass(wc)
             self._hwnd = win32gui.CreateWindow(
                 wc.lpszClassName,
-                "Voice Recorder Hotkey Window",
+                "Memo Hotkey Window",
                 0, 0, 0, 0, 0, 0, 0, None, None
             )
             

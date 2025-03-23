@@ -1,5 +1,5 @@
 """
-Theme management for the Voice Recorder application.
+Theme management for the Memo application.
 Provides consistent styling across the application.
 """
 

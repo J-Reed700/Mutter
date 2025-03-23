@@ -28,14 +28,6 @@ class SystemTrayIcon(QSystemTrayIcon):
         # Set the menu
         self.setContextMenu(self.menu)
         
-        # Show a message when the app starts
-        self.showMessage(
-            "Voice Recorder",
-            "App is running in the system tray",
-            QSystemTrayIcon.Information,
-            2000
-        )
-    
     def show_settings(self):
         self.settings_window.show()
         self.settings_window.raise_()

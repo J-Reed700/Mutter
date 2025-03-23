@@ -9,6 +9,7 @@ from ..infrastructure.audio.recorder import AudioRecorder
 from ..infrastructure.hotkeys.base import HotkeyHandler
 from ..infrastructure.transcription.transcriber import Transcriber
 from ..infrastructure.llm.processor import TextProcessor, LLMProcessingResult
+from ..infrastructure.llm.embedded_processor import EmbeddedTextProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ class RecordingService(QObject):
         
         # Initialize LLM processor if enabled
         self.text_processor = None
+        self.embedded_processor = None
         if self.settings.llm.enabled:
             self._initialize_llm_processor()
         
@@ -56,11 +58,28 @@ class RecordingService(QObject):
     def _initialize_llm_processor(self):
         """Initialize the LLM processor"""
         try:
-            self.text_processor = TextProcessor(api_url=self.settings.llm.api_url)
+            if self.settings.llm.use_embedded_model:
+                # Initialize embedded processor
+                logger.info("Initializing embedded LLM processor")
+                self.embedded_processor = EmbeddedTextProcessor()
+                if self.settings.llm.embedded_model_name:
+                    self.embedded_processor.model_name = self.settings.llm.embedded_model_name
+                # Make sure to set text_processor to None when using embedded
+                self.text_processor = None
+                logger.info(f"Embedded LLM processor initialized with model: {self.settings.llm.embedded_model_name}")
+            else:
+                # Initialize external API processor
+                logger.info("Initializing external LLM processor")
+                self.text_processor = TextProcessor(api_url=self.settings.llm.api_url)
+                # Make sure to set embedded_processor to None when using external
+                self.embedded_processor = None
+                logger.info("External LLM processor initialized with API URL: {self.settings.llm.api_url}")
+            
             logger.info("LLM processor initialized")
         except Exception as e:
             logger.error(f"Failed to initialize LLM processor: {e}")
             self.text_processor = None
+            self.embedded_processor = None
     
     def _register_hotkeys(self):
         """Register the hotkeys from settings"""
@@ -70,37 +89,89 @@ class RecordingService(QObject):
         if self.settings.hotkeys.process_text_key:
             self.hotkey_handler.register_process_text_hotkey(self.settings.hotkeys.process_text_key)
     
-    def set_hotkey(self, key_sequence: QKeySequence):
+    def set_hotkey(self, key_sequence: QKeySequence) -> bool:
         """Set a new hotkey for recording
         
         Args:
             key_sequence: The new key sequence to use
+            
+        Returns:
+            bool: True if the hotkey was successfully registered, False otherwise
         """
-        logger.debug(f"Setting new hotkey: {key_sequence.toString()}")
+        logger.debug(f"Setting new record hotkey: {key_sequence.toString()}")
         
-        # Unregister old hotkeys
-        for key in list(self.hotkey_handler.registered_hotkeys.keys()):
-            self.hotkey_handler.unregister_hotkey(key)
-        
-        # Register new hotkey
-        self.hotkey_handler.register_hotkey(key_sequence)
-        
-        # Update settings
-        self.settings.hotkeys.record_key = key_sequence
+        try:
+            # Unregister old record hotkeys only (keep other hotkeys)
+            old_hotkeys = []
+            for key in list(self.hotkey_handler.registered_hotkeys.keys()):
+                # Skip process text hotkey and exit hotkey
+                if (self.hotkey_handler.registered_process_text_hotkey is not None and 
+                    key == self.hotkey_handler.registered_process_text_hotkey):
+                    continue
+                    
+                if key.toString() == "Ctrl+Shift+Q":  # Exit hotkey
+                    continue
+                    
+                old_hotkeys.append(key)
+                
+            # Unregister old recording hotkeys
+            for key in old_hotkeys:
+                logger.debug(f"Unregistering old hotkey: {key.toString()}")
+                self.hotkey_handler.unregister_hotkey(key)
+            
+            # Register new hotkey
+            success = self.hotkey_handler.register_hotkey(key_sequence)
+            
+            if success:
+                # Update settings
+                self.settings.hotkeys.record_key = key_sequence
+                # Make sure the settings are saved
+                self.settings_repository.save(self.settings)
+                logger.info(f"Successfully registered record hotkey: {key_sequence.toString()}")
+            else:
+                logger.warning(f"Failed to register record hotkey: {key_sequence.toString()}")
+                
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error setting record hotkey: {e}", exc_info=True)
+            return False
     
-    def set_process_text_hotkey(self, key_sequence: QKeySequence):
-        """Set a new hotkey for text processing
+    def set_process_text_hotkey(self, key_sequence: QKeySequence) -> bool:
+        """Set a new hotkey for processing clipboard text
         
         Args:
             key_sequence: The new key sequence to use
+            
+        Returns:
+            bool: True if the hotkey was successfully registered, False otherwise
         """
         logger.debug(f"Setting new process text hotkey: {key_sequence.toString()}")
         
-        # Register new hotkey
-        self.hotkey_handler.register_process_text_hotkey(key_sequence)
-        
-        # Update settings
-        self.settings.hotkeys.process_text_key = key_sequence
+        try:
+            # Unregister old process text hotkey if it exists
+            if (self.hotkey_handler.registered_process_text_hotkey is not None and
+                self.hotkey_handler.registered_process_text_hotkey in self.hotkey_handler.registered_hotkeys):
+                logger.debug(f"Unregistering old process text hotkey: {self.hotkey_handler.registered_process_text_hotkey.toString()}")
+                self.hotkey_handler.unregister_hotkey(self.hotkey_handler.registered_process_text_hotkey)
+            
+            # Register new process text hotkey
+            success = self.hotkey_handler.register_process_text_hotkey(key_sequence)
+            
+            if success:
+                # Update settings
+                self.settings.hotkeys.process_text_key = key_sequence
+                # Make sure the settings are saved
+                self.settings_repository.save(self.settings)
+                logger.info(f"Successfully registered process text hotkey: {key_sequence.toString()}")
+            else:
+                logger.warning(f"Failed to register process text hotkey: {key_sequence.toString()}")
+                
+            return success
+                
+        except Exception as e:
+            logger.error(f"Error setting process text hotkey: {e}", exc_info=True)
+            return False
     
     def _on_hotkey_pressed(self):
         """Handle hotkey press event"""
@@ -150,11 +221,36 @@ class RecordingService(QObject):
         Args:
             text: Text to process
         """
+        # First check if we're using the embedded model
+        if self.settings.llm.use_embedded_model and self.embedded_processor:
+            logger.debug(f"Processing text with embedded LLM: {text[:50]}...")
+            
+            try:
+                processing_type = self.settings.llm.default_processing_type
+                
+                if processing_type == "summarize" or processing_type == "custom":
+                    # For embedded processor, we just always use summarize
+                    result = self.embedded_processor.summarize(text)
+                else:
+                    # Default to summarize for embedded processor
+                    result = self.embedded_processor.summarize(text)
+                    
+                if result:
+                    logger.info(f"Embedded LLM processing complete: {result.processing_type}")
+                    self.llm_processing_complete.emit(result)
+                else:
+                    logger.warning("Embedded LLM processing returned no result")
+            except Exception as e:
+                logger.error(f"Error processing text with embedded LLM: {e}")
+            
+            return
+            
+        # If not using embedded model, try external processor
         if not self.text_processor:
             logger.warning("LLM processor not initialized")
             return
             
-        logger.debug(f"Processing text with LLM: {text[:50]}...")
+        logger.debug(f"Processing text with external LLM: {text[:50]}...")
         
         try:
             processing_type = self.settings.llm.default_processing_type

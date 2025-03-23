@@ -1,4 +1,4 @@
-# Voice Recorder
+# Memo
 
 A powerful voice recording application with local speech-to-text transcription. Press a hotkey to start recording, release to transcribe automatically.
 
@@ -14,7 +14,8 @@ A powerful voice recording application with local speech-to-text transcription. 
 
 ### Prerequisites
 
-- Python 3.8 or higher
+- Python 3.10 or lower
+- Poetry for dependency management
 - PySide6 for the GUI
 - faster-whisper for transcription
 
@@ -24,27 +25,28 @@ A powerful voice recording application with local speech-to-text transcription. 
    ```
    git clone https://github.com/yourusername/voice-recorder.git
    cd voice-recorder
+
+   ```
+2. Install Poetry:
+    ```
+    pip install poetry
+    ```
+
+3. Install the dependencies using Poetry:
+   ```
+   python -m poetry install
    ```
 
-2. Create a virtual environment:
+4. Activate the virtual environment created by Poetry:
    ```
-   python -m venv .venv
-   ```
-
-3. Activate the virtual environment:
-   - Windows: `.venv\Scripts\activate`
-   - macOS/Linux: `source .venv/bin/activate`
-
-4. Install the dependencies:
-   ```
-   pip install -r requirements.txt
+   python -m poetry shell
    ```
 
 ## Usage
 
 1. Run the application:
    ```
-   python -m src.main
+   python -m poetry run python -m src.main
    ```
 
 2. The application will start in the system tray.
@@ -54,6 +56,12 @@ A powerful voice recording application with local speech-to-text transcription. 
 4. Release the hotkey to stop recording and start transcription.
 
 5. The transcription will appear in a notification and can be copied to clipboard.
+
+6. Press `Ctrl+Shift+R` again to start recording again.
+
+7. You can now paste the transcription into your favorite text editor or chat application.
+
+8. You can press `Ctrl+Shift+Q` to quit the application.
 
 ## Configuration
 
@@ -66,18 +74,3 @@ A powerful voice recording application with local speech-to-text transcription. 
 ## Building Executables
 
 To build standalone executables:
-
-```
-python package_builder.py
-```
-
-The executable will be created in the `dist` directory.
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Acknowledgments
-
-- [faster-whisper](https://github.com/guillaumekln/faster-whisper) - Optimized Whisper implementation
-- [PySide6](https://wiki.qt.io/Qt_for_Python) - Qt bindings for Python 

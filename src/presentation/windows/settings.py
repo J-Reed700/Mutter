@@ -3,7 +3,8 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QComboBox, QTabWidget,
     QGroupBox, QFormLayout, QSpinBox, QCheckBox,
     QKeySequenceEdit, QDialog, QSlider, QFrame,
-    QApplication, QStyle, QSizePolicy, QMessageBox
+    QApplication, QStyle, QSizePolicy, QMessageBox,
+    QButtonGroup, QRadioButton
 )
 from PySide6.QtCore import Qt, Slot, Signal
 from PySide6.QtGui import QKeySequence, QFont, QIcon, QPixmap
@@ -18,12 +19,17 @@ from ..theme import AppTheme
 logger = logging.getLogger(__name__)
 
 class SettingsWindow(QMainWindow):
+    # Add a signal to indicate settings were saved
+    settings_saved = Signal()
+    
     def __init__(self, settings: Settings, settings_repository: SettingsRepository):
         super().__init__()
         self.settings = settings
         self.settings_repository = settings_repository
+        self.save_requested = False  # Track if Save button was clicked
+        self.settings_changed = False  # Track if any settings were actually changed
         
-        self.setWindowTitle("Voice Recorder Settings")
+        self.setWindowTitle("Memo Settings")
         self.setMinimumSize(600, 500)
         
         # Set window icon if available
@@ -39,7 +45,7 @@ class SettingsWindow(QMainWindow):
         
         # Header with title and version
         header_layout = QHBoxLayout()
-        title_label = QLabel("Voice Recorder Settings")
+        title_label = QLabel("Memo Settings")
         title_font = QFont()
         title_font.setPointSize(16)
         title_font.setBold(True)
@@ -116,6 +122,7 @@ class SettingsWindow(QMainWindow):
             self.settings.hotkeys.record_key
         )
         self.record_hotkey_edit.setMinimumWidth(200)
+        self.record_hotkey_edit.editingFinished.connect(self._mark_settings_changed)
         record_layout.addRow("Record Key:", self.record_hotkey_edit)
         
         # Add a description
@@ -135,6 +142,7 @@ class SettingsWindow(QMainWindow):
             self.settings.hotkeys.pause_key or QKeySequence()
         )
         self.pause_hotkey_edit.setMinimumWidth(200)
+        self.pause_hotkey_edit.editingFinished.connect(self._mark_settings_changed)
         pause_layout.addRow("Pause Key:", self.pause_hotkey_edit)
         
         # Add a description
@@ -154,6 +162,7 @@ class SettingsWindow(QMainWindow):
             self.settings.hotkeys.process_text_key or QKeySequence("Ctrl+Shift+P")
         )
         self.process_hotkey_edit.setMinimumWidth(200)
+        self.process_hotkey_edit.editingFinished.connect(self._mark_settings_changed)
         process_layout.addRow("Process Text Key:", self.process_hotkey_edit)
         
         # Add a description
@@ -188,7 +197,9 @@ class SettingsWindow(QMainWindow):
         
         self.device_combo = QComboBox()
         self.device_combo.setMinimumWidth(300)
+        self.device_combo.setMinimumHeight(30)
         self._populate_audio_devices()
+        self.device_combo.currentIndexChanged.connect(self._mark_settings_changed)
         device_layout.addRow("Input Device:", self.device_combo)
         
         # Refresh button
@@ -207,9 +218,11 @@ class SettingsWindow(QMainWindow):
         
         self.sample_rate_combo = QComboBox()
         self.sample_rate_combo.setMinimumWidth(200)
+        self.sample_rate_combo.setMinimumHeight(30)
         for rate in [8000, 16000, 44100, 48000]:
             self.sample_rate_combo.addItem(f"{rate} Hz", rate)
         self.sample_rate_combo.setCurrentText(f"{self.settings.audio.sample_rate} Hz")
+        self.sample_rate_combo.currentIndexChanged.connect(self._mark_settings_changed)
         settings_layout.addRow("Sample Rate:", self.sample_rate_combo)
         
         # Add a sample rate description
@@ -220,6 +233,7 @@ class SettingsWindow(QMainWindow):
         self.channels_spin = QSpinBox()
         self.channels_spin.setRange(1, 2)
         self.channels_spin.setValue(self.settings.audio.channels)
+        self.channels_spin.valueChanged.connect(self._mark_settings_changed)
         settings_layout.addRow("Channels:", self.channels_spin)
         
         # Add a channels description
@@ -233,87 +247,86 @@ class SettingsWindow(QMainWindow):
         return widget
     
     def _create_transcription_tab(self) -> QWidget:
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(15, 15, 15, 15)
-        
-        # Help text at the top
-        help_label = QLabel(
-            "Configure transcription settings. Larger models provide better accuracy "
-            "but use more memory and CPU/GPU resources."
-        )
-        help_label.setWordWrap(True)
-        layout.addWidget(help_label)
-        
-        # Model settings
-        model_group = QGroupBox("Whisper Model")
+        """Create the transcription tab with all settings for speech recognition."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        # Model selection group
+        model_group = QGroupBox("Transcription Model Settings")
         model_layout = QFormLayout(model_group)
-        model_layout.setContentsMargins(15, 20, 15, 15)
-        model_layout.setSpacing(10)
-        
+
+        # Model dropdown
         self.model_combo = QComboBox()
-        self.model_combo.setMinimumWidth(200)
-        for model in ['tiny', 'base', 'small', 'medium', 'large']:
-            self.model_combo.addItem(model)
+        self.model_combo.addItems(["tiny", "base", "small", "medium", "large"])
         self.model_combo.setCurrentText(self.settings.transcription.model)
+        self.model_combo.currentTextChanged.connect(self._mark_settings_changed)
+        self.model_combo.setMinimumWidth(200)
+        self.model_combo.setMinimumHeight(30)
+        
+        # Add tooltip to explain model sizes
+        self.model_combo.setToolTip(
+            "Model size affects accuracy and performance:\n"
+            "- tiny: Fastest, lowest accuracy\n"
+            "- base: Fast, moderate accuracy\n"
+            "- small: Good balance of speed and accuracy\n"
+            "- medium: Higher accuracy, slower\n"
+            "- large: Best accuracy, slowest and uses most memory"
+        )
+        
         model_layout.addRow("Model Size:", self.model_combo)
-        
-        # Add a model description
-        model_desc = QLabel("Larger models are more accurate but use more resources")
-        model_desc.setStyleSheet("color: #666666; font-size: 12px;")
-        model_layout.addRow("", model_desc)
-        
+
+        # Device selection
         self.device_type_combo = QComboBox()
-        self.device_type_combo.addItems(['cpu', 'cuda'])
-        self.device_type_combo.setCurrentText(self.settings.transcription.device)
-        model_layout.addRow("Device:", self.device_type_combo)
-        
-        # Add a device description
-        device_desc = QLabel("CPU is compatible with all systems, CUDA requires NVIDIA GPU")
-        device_desc.setStyleSheet("color: #666666; font-size: 12px;")
-        model_layout.addRow("", device_desc)
-        
-        layout.addWidget(model_group)
-        
-        # Language settings
-        lang_group = QGroupBox("Language")
-        lang_layout = QFormLayout(lang_group)
-        lang_layout.setContentsMargins(15, 20, 15, 15)
-        lang_layout.setSpacing(10)
-        
-        self.language_combo = QComboBox()
-        self.language_combo.setMinimumWidth(200)
-        languages = [
-            ('auto', 'Auto-detect'),
-            ('en', 'English'),
-            ('es', 'Spanish'),
-            ('fr', 'French'),
-            ('de', 'German'),
-            ('it', 'Italian'),
-            ('pt', 'Portuguese'),
-            ('nl', 'Dutch'),
-            ('pl', 'Polish'),
-            ('ru', 'Russian'),
-            ('zh', 'Chinese'),
-            ('ja', 'Japanese'),
-            ('ko', 'Korean')
+        # Updated device options with descriptions
+        device_options = [
+            "cpu - Works on all computers", 
+            "cuda - Requires NVIDIA GPU with CUDA libraries"
         ]
-        for code, name in languages:
-            self.language_combo.addItem(name, code)
-            if code == self.settings.transcription.language:
-                self.language_combo.setCurrentText(name)
+        self.device_type_combo.addItems(device_options)
         
-        lang_layout.addRow("Language:", self.language_combo)
+        # Set the current device with the description
+        current_device = "cpu - Works on all computers" if self.settings.transcription.device == "cpu" else "cuda - Requires NVIDIA GPU with CUDA libraries"
+        self.device_type_combo.setCurrentText(current_device)
         
-        # Add a language description
-        lang_desc = QLabel("Select the language for transcription or let Whisper auto-detect")
-        lang_desc.setStyleSheet("color: #666666; font-size: 12px;")
-        lang_layout.addRow("", lang_desc)
+        self.device_type_combo.currentTextChanged.connect(self._mark_settings_changed)
+        self.device_type_combo.setMinimumWidth(200)
+        self.device_type_combo.setMinimumHeight(30)
         
-        layout.addWidget(lang_group)
+        # Add tooltip to explain device options
+        self.device_type_combo.setToolTip(
+            "Select processing device:\n"
+            "- CPU: Compatible with all computers, slower\n"
+            "- CUDA: Requires NVIDIA GPU with CUDA libraries installed, much faster\n\n"
+            "If CUDA libraries are missing, the application will fall back to CPU automatically."
+        )
+        
+        model_layout.addRow("Processing Device:", self.device_type_combo)
+
+        # Add model group to layout
+        layout.addWidget(model_group)
+
+        # Language selection group
+        language_group = QGroupBox("Language Settings")
+        language_layout = QFormLayout(language_group)
+
+        # Language dropdown
+        self.language_combo = QComboBox()
+        languages = ["English", "Spanish", "French", "German", "Italian", "Portuguese", "Dutch", 
+                     "Russian", "Arabic", "Chinese", "Japanese", "Korean", "Auto-detect"]
+        self.language_combo.addItems(languages)
+        self.language_combo.setCurrentText(self.settings.transcription.language or "English")
+        self.language_combo.currentTextChanged.connect(self._mark_settings_changed)
+        self.language_combo.setMinimumWidth(200)
+        self.language_combo.setMinimumHeight(30)
+        language_layout.addRow("Language:", self.language_combo)
+
+        # Add language group to layout
+        layout.addWidget(language_group)
+
+        # Add spacer at the bottom
         layout.addStretch()
-        
-        return widget
+
+        return tab
     
     def _create_llm_tab(self) -> QWidget:
         """Create the LLM settings tab"""
@@ -323,8 +336,8 @@ class SettingsWindow(QMainWindow):
         
         # Help text at the top
         help_label = QLabel(
-            "Configure the local LLM processing for transcriptions. "
-            "This requires a local LLM server running."
+            "Configure LLM processing for transcriptions. "
+            "You can use either the built-in LLM or connect to an external LLM server."
         )
         help_label.setWordWrap(True)
         layout.addWidget(help_label)
@@ -338,34 +351,92 @@ class SettingsWindow(QMainWindow):
         self.llm_enabled_check = QCheckBox("Enable LLM processing")
         self.llm_enabled_check.setChecked(self.settings.llm.enabled)
         self.llm_enabled_check.toggled.connect(self._on_llm_enabled_toggled)
+        self.llm_enabled_check.toggled.connect(self._mark_settings_changed)
         enable_layout.addRow("", self.llm_enabled_check)
         
-        enable_desc = QLabel("Process transcriptions with a local LLM server")
+        enable_desc = QLabel("Process transcriptions with an LLM to summarize or extract key points")
         enable_desc.setStyleSheet("color: #666666; font-size: 12px;")
         enable_layout.addRow("", enable_desc)
         
         layout.addWidget(enable_group)
         
-        # LLM Server Settings
-        server_group = QGroupBox("LLM Server Settings")
-        server_layout = QFormLayout(server_group)
-        server_layout.setContentsMargins(15, 20, 15, 15)
-        server_layout.setSpacing(10)
+        # LLM Mode selection (embedded vs external)
+        mode_group = QGroupBox("LLM Mode")
+        mode_layout = QVBoxLayout(mode_group)
+        mode_layout.setContentsMargins(15, 20, 15, 15)
+        mode_layout.setSpacing(10)
+        
+        self.llm_mode_group = QButtonGroup(self)
+        self.embedded_radio = QRadioButton("Use built-in LLM (no setup required)")
+        self.external_radio = QRadioButton("Use external LLM server")
+        
+        # Set the initial state based on settings
+        if hasattr(self.settings.llm, 'use_embedded_model'):
+            self.embedded_radio.setChecked(self.settings.llm.use_embedded_model)
+            self.external_radio.setChecked(not self.settings.llm.use_embedded_model)
+        else:
+            self.embedded_radio.setChecked(True)
+            self.external_radio.setChecked(False)
+        
+        self.llm_mode_group.addButton(self.embedded_radio)
+        self.llm_mode_group.addButton(self.external_radio)
+        
+        mode_layout.addWidget(self.embedded_radio)
+        
+        # Add embedded model selection
+        embedded_settings = QWidget()
+        embedded_layout = QFormLayout(embedded_settings)
+        embedded_layout.setContentsMargins(20, 5, 5, 5)
+        
+        self.embedded_model_combo = QComboBox()
+        self.embedded_model_combo.addItems([
+            "distilbart-cnn-12-6",
+            "sshleifer/distilbart-xsum-12-3",
+            "facebook/bart-large-cnn",
+            "philschmid/distilbart-cnn-12-6-samsum"
+        ])
+        self.embedded_model_combo.setMinimumWidth(300)
+        self.embedded_model_combo.setMinimumHeight(30)
+        # Set current embedded model
+        if hasattr(self.settings.llm, 'embedded_model_name') and self.settings.llm.embedded_model_name:
+            index = self.embedded_model_combo.findText(self.settings.llm.embedded_model_name)
+            if index >= 0:
+                self.embedded_model_combo.setCurrentIndex(index)
+        
+        self.embedded_model_combo.currentIndexChanged.connect(self._mark_settings_changed)
+        
+        embedded_layout.addRow("Model:", self.embedded_model_combo)
+        
+        embedded_desc = QLabel("Built-in models work immediately without additional setup but use more memory")
+        embedded_desc.setStyleSheet("color: #666666; font-size: 12px;")
+        embedded_desc.setWordWrap(True)
+        embedded_layout.addRow("", embedded_desc)
+        
+        mode_layout.addWidget(embedded_settings)
+        mode_layout.addWidget(self.external_radio)
+        
+        # Add external server settings
+        server_settings = QWidget()
+        server_layout = QFormLayout(server_settings)
+        server_layout.setContentsMargins(20, 5, 5, 5)
         
         self.llm_api_url_edit = QComboBox()
         self.llm_api_url_edit.setEditable(True)
         self.llm_api_url_edit.setMinimumWidth(300)
+        self.llm_api_url_edit.setMinimumHeight(30)
         self.llm_api_url_edit.addItems([
             "http://localhost:8080/v1",
             "http://localhost:11434/v1",
             "http://localhost:5000/v1",
         ])
         self.llm_api_url_edit.setCurrentText(self.settings.llm.api_url)
+        self.llm_api_url_edit.currentTextChanged.connect(self._mark_settings_changed)
         server_layout.addRow("API URL:", self.llm_api_url_edit)
         
         self.llm_model_edit = QComboBox()
         self.llm_model_edit.setEditable(True)
-        self.llm_model_edit.setMinimumWidth(200)
+        self.llm_model_edit.setMinimumWidth(300)
+        self.llm_model_edit.setMinimumHeight(30)
         self.llm_model_edit.addItems([
             "llama3",
             "mistral",
@@ -374,6 +445,7 @@ class SettingsWindow(QMainWindow):
             "mixtral"
         ])
         self.llm_model_edit.setCurrentText(self.settings.llm.model)
+        self.llm_model_edit.currentTextChanged.connect(self._mark_settings_changed)
         server_layout.addRow("Model:", self.llm_model_edit)
         
         # Test LLM Connection button
@@ -382,7 +454,15 @@ class SettingsWindow(QMainWindow):
         test_button.clicked.connect(self._test_llm_connection)
         server_layout.addRow("", test_button)
         
-        layout.addWidget(server_group)
+        mode_layout.addWidget(server_settings)
+        
+        # Connect signals to enable/disable the appropriate sections
+        self.embedded_radio.toggled.connect(lambda checked: embedded_settings.setEnabled(checked))
+        self.embedded_radio.toggled.connect(self._mark_settings_changed)
+        self.external_radio.toggled.connect(lambda checked: server_settings.setEnabled(checked))
+        self.external_radio.toggled.connect(self._mark_settings_changed)
+        
+        layout.addWidget(mode_group)
         
         # LLM Processing Settings
         processing_group = QGroupBox("Processing Settings")
@@ -395,6 +475,8 @@ class SettingsWindow(QMainWindow):
         self.processing_type_combo.addItem("Extract Action Items", "action_items")
         self.processing_type_combo.addItem("Key Points", "key_points")
         self.processing_type_combo.addItem("Custom Prompt", "custom")
+        self.processing_type_combo.setMinimumWidth(250)
+        self.processing_type_combo.setMinimumHeight(30)
         
         # Set current item based on settings
         for i in range(self.processing_type_combo.count()):
@@ -402,6 +484,8 @@ class SettingsWindow(QMainWindow):
                 self.processing_type_combo.setCurrentIndex(i)
                 break
                 
+        self.processing_type_combo.currentIndexChanged.connect(self._mark_settings_changed)
+        
         processing_layout.addRow("Default Processing:", self.processing_type_combo)
         
         # Custom prompt text edit
@@ -409,10 +493,16 @@ class SettingsWindow(QMainWindow):
         custom_prompt_desc.setStyleSheet("color: #666666; font-size: 12px;")
         processing_layout.addRow("", custom_prompt_desc)
         
+        # Note about embedded model limitations
+        embedded_note = QLabel("Note: Built-in models only support summarization and may ignore custom prompts")
+        embedded_note.setStyleSheet("color: #666666; font-size: 12px; font-style: italic;")
+        embedded_note.setWordWrap(True)
+        processing_layout.addRow("", embedded_note)
+        
         layout.addWidget(processing_group)
         
         # Disable the settings if LLM is not enabled
-        server_group.setEnabled(self.settings.llm.enabled)
+        mode_group.setEnabled(self.settings.llm.enabled)
         processing_group.setEnabled(self.settings.llm.enabled)
         
         layout.addStretch()
@@ -437,11 +527,18 @@ class SettingsWindow(QMainWindow):
         notif_layout.setSpacing(10)
         
         self.show_notif_check = QCheckBox("Show notifications")
-        self.show_notif_check.setChecked(True)  # Default to true
+        self.show_notif_check.setChecked(self.settings.appearance.show_notifications if hasattr(self.settings, 'appearance') else True)
+        self.show_notif_check.toggled.connect(self._mark_settings_changed)
         notif_layout.addRow("", self.show_notif_check)
         
+        self.mute_notif_check = QCheckBox("Mute notification sounds")
+        self.mute_notif_check.setChecked(self.settings.appearance.mute_notifications if hasattr(self.settings, 'appearance') else True)
+        self.mute_notif_check.toggled.connect(self._mark_settings_changed)
+        notif_layout.addRow("", self.mute_notif_check)
+        
         self.clipboard_check = QCheckBox("Auto-copy transcription to clipboard")
-        self.clipboard_check.setChecked(False)  # Default to false
+        self.clipboard_check.setChecked(self.settings.appearance.auto_copy_to_clipboard if hasattr(self.settings, 'appearance') else True)
+        self.clipboard_check.toggled.connect(self._mark_settings_changed)
         notif_layout.addRow("", self.clipboard_check)
         
         layout.addWidget(notif_group)
@@ -453,8 +550,11 @@ class SettingsWindow(QMainWindow):
         theme_layout.setSpacing(10)
         
         self.theme_combo = QComboBox()
+        self.theme_combo.setMinimumWidth(200)
+        self.theme_combo.setMinimumHeight(30)
         self.theme_combo.addItems(['Light', 'Dark', 'System'])
-        self.theme_combo.setCurrentText('Light')  # Default
+        self.theme_combo.setCurrentText(self.settings.appearance.theme if hasattr(self.settings, 'appearance') else 'Light')
+        self.theme_combo.currentIndexChanged.connect(self._mark_settings_changed)
         theme_layout.addRow("Theme:", self.theme_combo)
         
         # Add a theme description
@@ -484,40 +584,88 @@ class SettingsWindow(QMainWindow):
                 if dev['name'] == self.settings.audio.input_device:
                     self.device_combo.setCurrentIndex(self.device_combo.count() - 1)
     
+    def _mark_settings_changed(self):
+        """Mark that settings have been changed"""
+        self.settings_changed = True
+    
     @Slot()
     def _save_settings(self):
-        """Save the current settings"""
-        # Update hotkey settings
-        self.settings.hotkeys.record_key = self.record_hotkey_edit.keySequence()
-        pause_seq = self.pause_hotkey_edit.keySequence()
-        self.settings.hotkeys.pause_key = pause_seq if not pause_seq.isEmpty() else None
-        process_seq = self.process_hotkey_edit.keySequence()
-        self.settings.hotkeys.process_text_key = process_seq if not process_seq.isEmpty() else None
+        """Save settings and apply them"""
+        # Save the state of our save request
+        self.save_requested = True
         
-        # Update audio settings
+        # If no settings were changed, just close the window
+        if not self.settings_changed:
+            self.close()
+            return
+        
+        # Update settings with values from UI
+        # 1. Hotkeys tab
+        record_key = self.record_hotkey_edit.keySequence()
+        self.settings.hotkeys.record_key = record_key
+        
+        if self.process_hotkey_edit.keySequence().isEmpty():
+            self.settings.hotkeys.process_text_key = None
+        else:
+            self.settings.hotkeys.process_text_key = self.process_hotkey_edit.keySequence()
+        
+        # 2. Audio tab
         self.settings.audio.input_device = self.device_combo.currentData()
         self.settings.audio.sample_rate = self.sample_rate_combo.currentData()
         self.settings.audio.channels = self.channels_spin.value()
         
-        # Update transcription settings
+        # 3. Transcription tab
         self.settings.transcription.model = self.model_combo.currentText()
-        self.settings.transcription.device = self.device_type_combo.currentText()
-        self.settings.transcription.language = self.language_combo.currentData()
         
-        # Update LLM settings
+        # Extract device value from the selection (remove description)
+        device_text = self.device_type_combo.currentText()
+        self.settings.transcription.device = "cpu" if device_text.startswith("cpu") else "cuda"
+        
+        self.settings.transcription.language = self.language_combo.currentText()
+        if self.settings.transcription.language == "Auto-detect":
+            self.settings.transcription.language = None
+        
+        # 4. LLM tab
         self.settings.llm.enabled = self.llm_enabled_check.isChecked()
-        self.settings.llm.api_url = self.llm_api_url_edit.currentText()
-        self.settings.llm.model = self.llm_model_edit.currentText()
+        
+        # Check whether we're using embedded model or external API
+        self.settings.llm.use_embedded_model = self.embedded_radio.isChecked()
+        
+        if self.settings.llm.use_embedded_model:
+            # Get the embedded model name
+            self.settings.llm.embedded_model_name = self.embedded_model_combo.currentText()
+        else:
+            # External API settings
+            self.settings.llm.api_url = self.llm_api_url_edit.currentText()
+            self.settings.llm.model = self.llm_model_edit.currentText()
+        
+        # Processing type (common for both modes)
         self.settings.llm.default_processing_type = self.processing_type_combo.currentData()
         
-        # Save appearance settings
-        # TODO: Store appearance settings to the settings object
+        # 5. Appearance tab
+        if not hasattr(self.settings, 'appearance'):
+            from ...domain.settings import AppearanceSettings
+            self.settings.appearance = AppearanceSettings()
+            
+        self.settings.appearance.show_notifications = self.show_notif_check.isChecked()
+        self.settings.appearance.mute_notifications = self.mute_notif_check.isChecked()
+        self.settings.appearance.auto_copy_to_clipboard = self.clipboard_check.isChecked()
+        self.settings.appearance.theme = self.theme_combo.currentText()
         
-        # Save to file
-        self.settings_repository.save(self.settings)
-        
-        # Close the window
-        self.close()
+        # Save settings
+        try:
+            self.settings_repository.save(self.settings)
+            self.settings_saved.emit()  # Emit signal that settings were saved
+            
+            # Show a saved toast
+            QMessageBox.information(self, "Settings Saved", "Settings have been saved successfully.")
+            
+            # Close the window
+            self.close()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save settings: {str(e)}")
+            return
 
     def _quit_application(self):
         """Quit the application with confirmation"""
@@ -594,6 +742,33 @@ class SettingsWindow(QMainWindow):
             cursor.setShape(Qt.ArrowCursor)
             self.setCursor(cursor)
 
+    def closeEvent(self, event):
+        """Handle the window close event"""
+        # If Save button was clicked, accept the close event
+        if self.save_requested:
+            self.save_requested = False  # Reset for next time
+            event.accept()
+            return
+            
+        # If no changes were made, just close without confirmation
+        if not self.settings_changed:
+            event.accept()
+            return
+            
+        # If close button (X) was clicked with changes, ask for confirmation
+        confirm = QMessageBox.question(
+            self,
+            "Close Settings",
+            "Close without saving changes?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if confirm == QMessageBox.Yes:
+            event.accept()
+        else:
+            event.ignore()
+
 class SettingsDialog(QDialog):
     hotkey_changed = Signal(object)  # Emits QKeySequence
 
@@ -601,7 +776,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.settings = settings
         self.settings_repository = settings_repository
-        self.setWindowTitle("Voice Recorder Settings")
+        self.setWindowTitle("Memo Settings")
         self.setMinimumWidth(400)
         
         # Set window icon if available
@@ -645,7 +820,6 @@ class SettingsDialog(QDialog):
         hotkey_label = QLabel("Recording Hotkey:")
         self.hotkey_edit = QKeySequenceEdit()
         self.hotkey_edit.setMinimumWidth(200)
-        self.hotkey_edit.editingFinished.connect(self._on_hotkey_changed)
         hotkey_layout.addRow(hotkey_label, self.hotkey_edit)
         
         # Add a note
@@ -697,12 +871,17 @@ class SettingsDialog(QDialog):
         
         if confirm == QMessageBox.Yes:
             QApplication.quit()
-        
-    def _on_hotkey_changed(self):
-        """Handle hotkey changes"""
+    
+    def accept(self):
+        """Override accept to emit hotkey_changed signal when OK is clicked"""
         new_sequence = self.hotkey_edit.keySequence()
         self.hotkey_changed.emit(new_sequence)
         logger.debug(f"Hotkey changed to: {new_sequence.toString()}")
+        super().accept()
+        
+    def _on_hotkey_changed(self):
+        """Handle hotkey changes - this is kept for backwards compatibility"""
+        pass
 
     def set_current_hotkey(self, key_sequence):
         """Set the current hotkey in the editor"""

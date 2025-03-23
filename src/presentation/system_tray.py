@@ -12,15 +12,44 @@ class SystemTrayIcon(QSystemTrayIcon):
     def __init__(self, parent: QWidget = None):
         super().__init__(parent)
         
+        # Settings for notifications (defaults)
+        self.show_notifications = False
+        self.mute_notifications = True
+        
         # Set the tray icon with appropriate resolution based on platform
         if platform.system() == 'Windows':
             icon_size = 16  # Windows usually uses 16x16 icons in system tray
+            preferred_icon = "microphone_16.png"
         else:
             icon_size = 32  # macOS and others use larger icons
+            preferred_icon = "microphone_32.png"
+        
+        # First try to load icon from file
+        icon_path = self._find_icon(preferred_icon, "microphone.png")
+        logger.debug(f"Found icon path: {icon_path} (exists: {icon_path.exists()})")
+        
+        if icon_path.exists():
+            logger.debug(f"Loading tray icon from: {icon_path}")
+            try:
+                self._default_icon = QIcon(str(icon_path))
+                # Check if the icon is valid/loaded correctly
+                if self._default_icon.isNull():
+                    logger.warning("Icon loaded but appears to be null/invalid")
+                    # Try to diagnose the issue
+                    logger.debug(f"Icon size: {QPixmap(str(icon_path)).size()}")
+                    self._default_icon = self._create_default_icon()
+                else:
+                    logger.debug("Successfully loaded icon from file")
+            except Exception as e:
+                logger.error(f"Error loading icon: {e}")
+                self._default_icon = self._create_default_icon()
+        else:
+            logger.info("Using fallback built-in icon")
+            self._default_icon = self._create_default_icon()
             
-        # Set the tray icon - either load from file or create in memory
-        self._default_icon = self._create_default_icon()
+        # Set the icon for the system tray
         self.setIcon(self._default_icon)
+        logger.debug("System tray icon set")
         
         # Set recording icon - we'll create it in memory for consistency
         self.recording_icon = self._create_recording_icon()
@@ -102,7 +131,7 @@ class SystemTrayIcon(QSystemTrayIcon):
         self.setContextMenu(self.menu)
         
         # Set tooltip
-        self.setToolTip("Voice Recorder\nReady")
+        self.setToolTip("Memo\nReady")
         
         # Store the last transcription and processed text
         self.last_transcription = ""
@@ -121,22 +150,133 @@ class SystemTrayIcon(QSystemTrayIcon):
         Returns:
             Path to the icon file
         """
-        # Look in resources/images
+        logger.debug(f"Searching for icon: {preferred_name} or {fallback_name}")
+        
+        # Start with the base project directory
+        try:
+            # More robust base directory detection
+            base_dir = Path(__file__).resolve().parent.parent.parent
+            logger.debug(f"Base directory: {base_dir}")
+            
+            # Check if resources directory exists
+            resources_dir = base_dir / "resources"
+            if resources_dir.exists():
+                logger.debug(f"Resources directory exists: {resources_dir}")
+            else:
+                logger.warning(f"Resources directory not found at: {resources_dir}")
+                # Try alternate location
+                resources_dir = Path.cwd() / "resources"
+                if resources_dir.exists():
+                    logger.debug(f"Found resources directory in current working directory: {resources_dir}")
+                
+            # Check if images directory exists
+            images_dir = resources_dir / "images"
+            if images_dir.exists():
+                logger.debug(f"Images directory exists: {images_dir}")
+                # Check specific files
+                for img_name in [preferred_name, fallback_name]:
+                    img_path = images_dir / img_name
+                    if img_path.exists():
+                        logger.debug(f"Found icon at: {img_path}")
+                        return img_path
+            else:
+                logger.warning(f"Images directory not found at: {images_dir}")
+        except Exception as e:
+            logger.error(f"Error checking directories: {e}")
+        
+        # Look in common locations for the icon files
         paths = [
-            Path(__file__).parent.parent.parent / "resources" / "images" / preferred_name,
-            Path(__file__).parent.parent.parent / "resources" / "images" / fallback_name,
-            # Fallbacks
-            Path(__file__).parent.parent.parent / "resources" / fallback_name,
-            Path(__file__).parent / "resources" / fallback_name
+            # Standard paths
+            base_dir / "resources" / "images" / preferred_name,
+            base_dir / "resources" / "images" / fallback_name,
+            base_dir / "resources" / "images" / preferred_name.lower(),
+            base_dir / "resources" / "images" / fallback_name.lower(),
+            base_dir / "resources" / fallback_name,
+            base_dir / "resources" / fallback_name.lower(),
+            # Windows subdirectory
+            base_dir / "resources" / "images" / "windows" / preferred_name,
+            base_dir / "resources" / "images" / "windows" / fallback_name,
+            # Icons directory
+            base_dir / "resources" / "icons" / preferred_name,
+            base_dir / "resources" / "icons" / fallback_name,
+            # Relative paths
+            Path(__file__).parent / "resources" / preferred_name,
+            Path(__file__).parent / "resources" / fallback_name,
+            # Try absolute paths relative to cwd
+            Path.cwd() / "resources" / "images" / preferred_name,
+            Path.cwd() / "resources" / "images" / fallback_name,
+            # Try relative to one directory up from cwd
+            Path.cwd().parent / "resources" / "images" / preferred_name,
+            Path.cwd().parent / "resources" / "images" / fallback_name,
         ]
         
+        # Try case-insensitive matching via direct directory scanning
+        try:
+            # Try to find files with similar names in images directory
+            if images_dir.exists():
+                for file in images_dir.glob("*.*"):
+                    if file.name.lower() == preferred_name.lower() or file.name.lower() == fallback_name.lower():
+                        logger.debug(f"Found icon via case-insensitive match: {file}")
+                        return file.resolve()
+            
+            # Check if icons directory exists and try there too
+            icons_dir = resources_dir / "icons"
+            if icons_dir.exists():
+                for file in icons_dir.glob("*.*"):
+                    if file.name.lower() == preferred_name.lower() or file.name.lower() == fallback_name.lower():
+                        logger.debug(f"Found icon via case-insensitive match in icons dir: {file}")
+                        return file.resolve()
+        except Exception as e:
+            logger.error(f"Error during case-insensitive file search: {e}")
+        
+        # Check all standard paths
         for path in paths:
             if path.exists():
-                return path
+                logger.debug(f"Found icon at: {path}")
+                return path.resolve()  # Make sure we return an absolute path
+            else:
+                logger.debug(f"Icon not found at: {path}")
+        
+        # Do a last-ditch recursive search in the resources directory
+        try:
+            if resources_dir.exists():
+                for pattern in [f"**/{preferred_name}", f"**/{fallback_name}", "**/*.png", "**/*.ico"]:
+                    matches = list(resources_dir.glob(pattern))
+                    if matches:
+                        logger.debug(f"Found icon via recursive search: {matches[0]}")
+                        return matches[0].resolve()
+        except Exception as e:
+            logger.error(f"Error during recursive file search: {e}")
                 
-        # Return the last path anyway, even if it doesn't exist
-        logger.debug(f"Could not find icon: {preferred_name} or {fallback_name}")
+        # Return the first path anyway, even if it doesn't exist
+        logger.warning(f"Could not find icon: {preferred_name} or {fallback_name}")
         return paths[0]
+
+    def update_settings(self, settings):
+        """Update tray settings from application settings"""
+        if hasattr(settings, 'appearance') and settings.appearance:
+            self.show_notifications = settings.appearance.show_notifications
+            self.mute_notifications = settings.appearance.mute_notifications
+            logger.debug(f"Updated notification settings: show_notifications={self.show_notifications}, mute_notifications={self.mute_notifications}")
+
+    def show_notification(self, title, message, icon=QSystemTrayIcon.MessageIcon.Information, duration=3000):
+        """Show a notification if enabled in settings
+        
+        Args:
+            title: Notification title
+            message: Notification message
+            icon: Icon type (Information, Warning, Critical)
+            duration: Display duration in milliseconds
+        """
+        if self.show_notifications:
+            # PySide6 doesn't support ShowMessageHint.NoSound directly
+            # We can't control sound in PySide6 directly, so we just show the notification
+            # The system's notification sound settings will control whether sound is played
+            self.showMessage(title, message, icon, duration)
+            
+            # Note: In PySide6, sound control for notifications needs to be handled at the system level
+            # If mute_notifications is True, the application can't directly control this
+            # Users should mute notification sounds in their system settings
 
     @Slot(QSystemTrayIcon.ActivationReason)
     def on_activated(self, reason):
@@ -144,7 +284,7 @@ class SystemTrayIcon(QSystemTrayIcon):
         if reason == QSystemTrayIcon.DoubleClick:
             if self.last_transcription:
                 self.copy_to_clipboard()
-                self.showMessage(
+                self.show_notification(
                     "Copied to Clipboard",
                     "The transcription has been copied to your clipboard.",
                     QSystemTrayIcon.MessageIcon.Information,
@@ -155,13 +295,13 @@ class SystemTrayIcon(QSystemTrayIcon):
     def on_recording_started(self):
         """Handle recording started signal"""
         self.status_action.setText("● Recording...")
-        self.setToolTip("Voice Recorder\nRecording in progress")
+        self.setToolTip("Memo\nRecording in progress")
         
         # Change icon to recording icon if it exists
         self.setIcon(self.recording_icon)
         
         # Show notification - but fewer and shorter
-        self.showMessage(
+        self.show_notification(
             "Recording",
             "Started",
             QSystemTrayIcon.MessageIcon.Information,
@@ -172,16 +312,30 @@ class SystemTrayIcon(QSystemTrayIcon):
     def on_recording_stopped(self, file_path: Path):
         """Handle recording stopped signal"""
         self.status_action.setText("Ready")
-        self.setToolTip("Voice Recorder\nReady")
+        self.setToolTip("Memo\nReady")
         
         # Restore original icon
-        if hasattr(self, '_default_icon'):
+        if hasattr(self, '_default_icon') and not self._default_icon.isNull():
+            logger.debug("Restoring default icon")
             self.setIcon(self._default_icon)
         else:
-            icon_path = self._find_icon(f"microphone_{16 if platform.system() == 'Windows' else 32}.png", "microphone.png")
-            if icon_path.exists():
-                self.setIcon(QIcon(str(icon_path)))
+            logger.debug("Recreating default icon")
+            # Re-find the icon file
+            if platform.system() == 'Windows':
+                preferred_icon = "microphone_16.png"
             else:
+                preferred_icon = "microphone_32.png"
+                
+            icon_path = self._find_icon(preferred_icon, "microphone.png")
+            if icon_path.exists():
+                logger.debug(f"Loading tray icon from: {icon_path}")
+                self._default_icon = QIcon(str(icon_path))
+                if self._default_icon.isNull():
+                    logger.warning("Icon loaded but is null, using fallback")
+                    self._default_icon = self._create_default_icon()
+                self.setIcon(self._default_icon)
+            else:
+                logger.debug("Using fallback icon")
                 self.setIcon(self._create_default_icon())
         
         # Don't show notification for stopping - will show transcription notification later
@@ -191,18 +345,35 @@ class SystemTrayIcon(QSystemTrayIcon):
     def on_recording_failed(self, error_message: str):
         """Handle recording failed signal"""
         self.status_action.setText("Ready")
-        self.setToolTip("Voice Recorder\nReady")
+        self.setToolTip("Memo\nReady")
         
-        # Restore original icon
-        icon_path = self._find_icon(f"microphone_{16 if platform.system() == 'Windows' else 32}.png", "microphone.png")
-        if icon_path.exists():
-            self.setIcon(QIcon(str(icon_path)))
+        # Restore original icon - use same logic as recording_stopped
+        if hasattr(self, '_default_icon') and not self._default_icon.isNull():
+            logger.debug("Restoring default icon")
+            self.setIcon(self._default_icon)
         else:
-            self.setIcon(self._create_default_icon())
+            logger.debug("Recreating default icon")
+            # Re-find the icon file
+            if platform.system() == 'Windows':
+                preferred_icon = "microphone_16.png"
+            else:
+                preferred_icon = "microphone_32.png"
+                
+            icon_path = self._find_icon(preferred_icon, "microphone.png")
+            if icon_path.exists():
+                logger.debug(f"Loading tray icon from: {icon_path}")
+                self._default_icon = QIcon(str(icon_path))
+                if self._default_icon.isNull():
+                    logger.warning("Icon loaded but is null, using fallback")
+                    self._default_icon = self._create_default_icon()
+                self.setIcon(self._default_icon)
+            else:
+                logger.debug("Using fallback icon")
+                self.setIcon(self._create_default_icon())
         
-        # Show error notification
+        # Show error notification (show even if notifications are disabled for important errors)
         self.showMessage(
-            "Voice Recorder - Error",
+            "Memo - Error",
             f"Recording failed:\n{error_message}",
             QSystemTrayIcon.MessageIcon.Critical,
             5000  # Show for 5 seconds
@@ -212,7 +383,7 @@ class SystemTrayIcon(QSystemTrayIcon):
     def on_transcription_complete(self, text: str):
         """Handle transcription completion"""
         self.status_action.setText("Ready")
-        self.setToolTip("Voice Recorder\nReady")
+        self.setToolTip("Memo\nReady")
         
         # Store the transcription
         self.last_transcription = text
@@ -228,7 +399,7 @@ class SystemTrayIcon(QSystemTrayIcon):
         
         # Show notification with transcribed text, but shorter
         preview_for_notification = text[:75] + "..." if len(text) > 75 else text
-        self.showMessage(
+        self.show_notification(
             "Transcription Complete",
             f"{preview_for_notification}\n\nCopied to clipboard",
             QSystemTrayIcon.MessageIcon.Information,
@@ -253,7 +424,7 @@ class SystemTrayIcon(QSystemTrayIcon):
         
         # Show notification with processed text
         preview_for_notification = result.processed_text[:75] + "..." if len(result.processed_text) > 75 else result.processed_text
-        self.showMessage(
+        self.show_notification(
             f"LLM Processing ({result.processing_type}) Complete",
             f"{preview_for_notification}",
             QSystemTrayIcon.MessageIcon.Information,

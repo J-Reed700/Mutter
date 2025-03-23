@@ -142,6 +142,12 @@ class ApplicationService(QObject):
         old_settings = self.settings
         self.settings = self.settings_repository.load()
         
+        # Track if transcription model needs reinitializing
+        transcription_model_changed = (
+            old_settings.transcription.model != self.settings.transcription.model or
+            old_settings.transcription.device != self.settings.transcription.device
+        )
+        
         # Check if audio settings changed
         if (old_settings.audio.sample_rate != self.settings.audio.sample_rate or
             old_settings.audio.channels != self.settings.audio.channels or
@@ -158,43 +164,83 @@ class ApplicationService(QObject):
             # Update recording service with new audio recorder
             self.recording_service.audio_recorder = self.audio_recorder
         
-        # Update transcriber settings
-        self.transcriber.model_size = self.settings.transcription.model
-        self.transcriber.device = self.settings.transcription.device
+        # Update transcription settings and reinitialize model if needed
+        if transcription_model_changed:
+            logger.debug(f"Transcription settings changed, reinitializing model. Model: {self.settings.transcription.model}, Device: {self.settings.transcription.device}")
+            try:
+                # Reinitialize the transcription model with new settings
+                self.transcriber = Transcriber(
+                    model_size=self.settings.transcription.model,
+                    device=self.settings.transcription.device,
+                    compute_type="int8"
+                )
+                
+                # Update the recording service's transcriber
+                self.recording_service.transcriber = self.transcriber
+                logger.info(f"Successfully reinitialized transcription model: {self.settings.transcription.model} on {self.settings.transcription.device}")
+            except Exception as e:
+                logger.error(f"Error reinitializing transcription model: {e}")
+        else:
+            # Just update the properties without reloading
+            self.transcriber.model_size = self.settings.transcription.model
+            self.transcriber.device = self.settings.transcription.device
         
         # Check if LLM settings changed
         if not hasattr(old_settings, 'llm') or old_settings.llm is None:
             old_llm_enabled = False
             old_llm_api_url = None
+            old_use_embedded = False
+            old_embedded_model_name = None
         else:
             old_llm_enabled = old_settings.llm.enabled
             old_llm_api_url = old_settings.llm.api_url
+            old_use_embedded = old_settings.llm.use_embedded_model
+            old_embedded_model_name = old_settings.llm.embedded_model_name
             
         if not hasattr(self.settings, 'llm') or self.settings.llm is None:
             self.settings.llm = LLMSettings()
             
-        # Update LLM processor if needed
-        if ((old_llm_enabled != self.settings.llm.enabled) or 
-            (self.settings.llm.enabled and old_llm_api_url != self.settings.llm.api_url)):
+        # Check if we need to update the LLM processor
+        llm_settings_changed = (
+            old_llm_enabled != self.settings.llm.enabled or 
+            old_use_embedded != self.settings.llm.use_embedded_model or
+            (self.settings.llm.enabled and not self.settings.llm.use_embedded_model and 
+             old_llm_api_url != self.settings.llm.api_url) or
+            (self.settings.llm.enabled and self.settings.llm.use_embedded_model and
+             old_embedded_model_name != self.settings.llm.embedded_model_name)
+        )
             
-            logger.debug("LLM settings changed, updating text processor")
+        # Update LLM processor if needed
+        if llm_settings_changed:
+            logger.debug(f"LLM settings changed, updating text processor. Use embedded: {self.settings.llm.use_embedded_model}")
+            
+            # Reset processors
+            self.recording_service.text_processor = None
+            self.recording_service.embedded_processor = None
             
             if self.settings.llm.enabled:
-                try:
-                    self.text_processor = TextProcessor(api_url=self.settings.llm.api_url)
-                    self.recording_service.text_processor = self.text_processor
-                    logger.info(f"Updated LLM processor with API at {self.settings.llm.api_url}")
-                except Exception as e:
-                    logger.error(f"Error updating LLM processor: {e}")
-                    self.text_processor = None
-                    self.recording_service.text_processor = None
-            else:
-                self.text_processor = None
-                self.recording_service.text_processor = None
-                logger.info("Disabled LLM processor")
+                # We need to update the recording service settings too
+                self.recording_service.settings = self.settings
+                # Re-initialize the appropriate processor based on settings
+                self.recording_service._initialize_llm_processor()
+        else:
+            # Even if specific LLM settings didn't change, update the recording service settings
+            # to ensure any other settings changes are propagated
+            self.recording_service.settings = self.settings
+        
+        # Update appearance settings in the UI
+        self._apply_appearance_settings()
             
         # Re-register hotkeys
         self.recording_service._register_hotkeys()
+    
+    def _apply_appearance_settings(self):
+        """Apply appearance settings to any UI components managed by this service"""
+        # This method can be used to propagate appearance settings changes
+        # to UI components managed by this service
+        logger.debug("Applying appearance settings from app service")
+        # For now, this is a placeholder as most UI components are handled directly in main.py
+        # but could be expanded if needed
     
     def shutdown(self):
         """Shutdown all services"""

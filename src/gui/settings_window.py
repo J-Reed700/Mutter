@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout,
 class SettingsWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Voice Recorder Settings")
+        self.setWindowTitle("Memo Settings")
         self.setMinimumSize(400, 300)
         
         # Create central widget and layout

@@ -30,12 +30,12 @@ VSVersionInfo(
       StringTable(
         u'040904B0',
         [StringStruct(u'CompanyName', u'Your Company'),
-        StringStruct(u'FileDescription', u'Voice Recorder'),
+        StringStruct(u'FileDescription', u'Memo'),
         StringStruct(u'FileVersion', u'1.0.0'),
         StringStruct(u'InternalName', u'voicerecorder'),
         StringStruct(u'LegalCopyright', u'Copyright (c) 2023'),
         StringStruct(u'OriginalFilename', u'VoiceRecorder.exe'),
-        StringStruct(u'ProductName', u'Voice Recorder'),
+        StringStruct(u'ProductName', u'Memo'),
         StringStruct(u'ProductVersion', u'1.0.0')])
       ]), 
     VarFileInfo([VarStruct(u'Translation', [1033, 1200])])

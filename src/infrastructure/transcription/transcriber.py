@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import time
 import requests
 import os
+import torch
 
 logger = logging.getLogger(__name__)
 
@@ -17,50 +18,63 @@ class TranscriptionResult:
     duration: float
 
 class Transcriber:
-    def __init__(self, model_size: str = "base", device: str = "cpu", compute_type: str = "int8", max_retries: int = 3):
-        """Initialize the transcriber with the specified model.
+    """Handles transcription of audio files using Whisper"""
+    
+    def __init__(self, model_size: str = "base", device: str = "cpu", compute_type: str = "int8"):
+        """Initialize the transcriber
         
         Args:
-            model_size: Size of the model ('tiny', 'base', 'small', 'medium', 'large')
-            device: Device to use ('cpu' or 'cuda')
-            compute_type: Compute type for optimization ('int8', 'float16', 'float32')
-            max_retries: Number of times to retry downloading the model
+            model_size: Size of the model to use ("tiny", "base", "small", "medium", "large")
+            device: Device to use for computation ("cpu" or "cuda")
+            compute_type: Compute type for inference ("int8", "fp16", "fp32")
         """
-        logger.info(f"Initializing Whisper model '{model_size}' on {device} with {compute_type}")
+        self.model_size = model_size
+        self.device = device
+        self.compute_type = compute_type
+        self.model = None
         
-        # Set environment variable to use the Hugging Face cache
-        os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+        # Set up a custom cache directory in the user's home folder
+        # This helps with model reuse between application runs
+        model_cache_dir = self._get_model_path()
+        os.environ["HF_HOME"] = model_cache_dir
+        os.environ["TRANSFORMERS_CACHE"] = os.path.join(model_cache_dir, "transformers")
         
-        # Try to load the specified model with retries
-        for attempt in range(max_retries):
-            try:
-                self.model = WhisperModel(model_size, device=device, compute_type=compute_type, download_root=self._get_model_path())
-                logger.info(f"Successfully loaded model: {model_size}")
-                return
-            except requests.exceptions.ChunkedEncodingError as e:
-                logger.warning(f"Network error on attempt {attempt+1}/{max_retries}: {e}")
-                if attempt < max_retries - 1:
-                    wait_time = 2 ** attempt  # Exponential backoff
-                    logger.info(f"Retrying in {wait_time} seconds...")
-                    time.sleep(wait_time)
-                else:
-                    logger.warning(f"Failed to download model '{model_size}' after {max_retries} attempts. Trying 'tiny' model.")
-            except Exception as e:
-                logger.error(f"Error loading model: {e}")
-                if attempt < max_retries - 1:
-                    logger.info(f"Retrying in 2 seconds...")
-                    time.sleep(2)
-                else:
-                    logger.warning(f"Failed to load model '{model_size}'. Falling back to 'tiny' model.")
+        logger.info(f"Using model cache directory: {model_cache_dir}")
         
-        # Fallback to tiny model if all retries failed
         try:
-            logger.info("Attempting to load fallback 'tiny' model")
-            self.model = WhisperModel("tiny", device=device, compute_type=compute_type, download_root=self._get_model_path())
-            logger.info("Successfully loaded fallback 'tiny' model")
+            logger.info(f"Initializing Whisper model '{model_size}' on {device} with {compute_type}")
+            
+            # If device is set to cuda but CUDA is not available, fall back to CPU
+            if device == "cuda" and not torch.cuda.is_available():
+                logger.warning("CUDA requested but not available, falling back to CPU")
+                self.device = "cpu"
+                device = "cpu"
+            
+            # Check if the model is already downloaded
+            model_loaded = False
+            model_dir = os.path.join(model_cache_dir, "models--openai--whisper-" + model_size)
+            if os.path.exists(model_dir):
+                logger.info(f"Found existing model at {model_dir}")
+            else:
+                logger.info(f"Model not found locally, will download to {model_cache_dir}")
+            
+            # Initialize the model with the cache directory
+            self.model = WhisperModel(model_size, device=device, compute_type=compute_type, download_root=model_cache_dir)
+            logger.info(f"Successfully loaded model: {model_size}")
         except Exception as e:
-            logger.critical(f"Fatal error: Could not load even the tiny model: {e}")
-            raise RuntimeError(f"Failed to initialize transcription model: {e}")
+            logger.error(f"Failed to initialize Whisper model: {e}")
+            # If initialization failed with CUDA, try to fall back to CPU
+            if device == "cuda":
+                logger.info("Attempting to initialize model on CPU instead")
+                try:
+                    self.device = "cpu"
+                    self.model = WhisperModel(model_size, device="cpu", compute_type=compute_type, download_root=model_cache_dir)
+                    logger.info(f"Successfully loaded model: {model_size} on CPU")
+                except Exception as fallback_e:
+                    logger.error(f"Failed to initialize Whisper model on CPU: {fallback_e}")
+                    raise
+            else:
+                raise
     
     def _get_model_path(self) -> str:
         """Get the path for model storage"""
@@ -93,6 +107,31 @@ class Transcriber:
             if file_size == 0:
                 logger.error("Audio file is empty (0 bytes)")
                 return None
+            
+            # Convert full language names to language codes
+            language_map = {
+                "english": "en",
+                "spanish": "es",
+                "french": "fr",
+                "german": "de",
+                "chinese": "zh",
+                "japanese": "ja",
+                "korean": "ko",
+                "russian": "ru",
+                "italian": "it",
+                "portuguese": "pt",
+                "dutch": "nl",
+                "arabic": "ar",
+                "hindi": "hi",
+                "auto": None
+            }
+            
+            # Normalize language to lowercase or None
+            norm_language = language.lower() if language else None
+            
+            # Convert full language name to code if needed
+            if norm_language in language_map:
+                language = language_map[norm_language]
                 
             # Run the transcription
             logger.debug(f"Starting Whisper transcription with language={language or 'auto-detect'}")

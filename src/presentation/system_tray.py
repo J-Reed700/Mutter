@@ -59,15 +59,23 @@ class SystemTrayIcon(QSystemTrayIcon):
         # Set recording icon - we'll create it in memory for consistency
         self.recording_icon = self._create_recording_icon()
         
+        # Create processing icon
+        self.processing_icon = self._create_processing_icon()
+        
         # Create pulse animation timer
         self.animation_timer = QTimer(self)
-        self.animation_timer.timeout.connect(self._animate_recording_icon)
+        self.animation_timer.timeout.connect(self._animate_icon)
         self.animation_frame = 0
         self.is_recording = False
+        self.is_processing = False
         
         # Create multiple animation frames
         self.recording_frames = []
         self._create_recording_animation_frames()
+        
+        # Create processing animation frames
+        self.processing_frames = []
+        self._create_processing_animation_frames()
         
         # Create the tray menu with styled font
         self.menu = QMenu()
@@ -310,7 +318,7 @@ class SystemTrayIcon(QSystemTrayIcon):
         logger.debug("on_stop_hotkey_pressed called - showing toast notification for stopping recording")
         self.toast.show_toast(
             "Recording Stopped", 
-            "⏹️ Processing...",
+            "Processing...",
             duration=3000,  # 3 seconds - shorter duration
             icon_type="info"
         )
@@ -325,22 +333,7 @@ class SystemTrayIcon(QSystemTrayIcon):
         
         # Set recording state
         self.is_recording = False
-        
-        # Stop animation timer
-        self.animation_timer.stop()
-        
-        # Restore original icon
-        if hasattr(self, '_default_icon'):
-            self.setIcon(self._default_icon)
-        else:
-            icon_path = self._find_icon(f"microphone_{16 if platform.system() == 'Windows' else 32}.png", "microphone.png")
-            if icon_path.exists():
-                self.setIcon(QIcon(str(icon_path)))
-            else:
-                self.setIcon(self._create_default_icon())
-        
-        # Show custom toast notification with info icon to indicate processing immediately
-        self.toast.show_toast("Processing Recording", "Your recording is being analyzed...", 4000, "info")
+        self.is_processing = True
 
     @Slot(str)
     def on_recording_failed(self, error_message: str):
@@ -384,6 +377,19 @@ class SystemTrayIcon(QSystemTrayIcon):
         # Store the transcription and update menu items
         self.last_transcription = text
         self.update_last_transcription_menu_item()
+        
+        # Set processing state
+        self.is_processing = False
+        
+        # Stop animation timer
+        self.animation_timer.stop()
+        
+        # Reset to default icon
+        self.setIcon(self._default_icon)
+        
+        # Update status
+        self.status_action.setText("Ready")
+        self.setToolTip("Voice Recorder\nReady")
         
         # Copy to clipboard automatically without showing notification
         self.copy_to_clipboard()
@@ -673,14 +679,148 @@ class SystemTrayIcon(QSystemTrayIcon):
                 
             self.recording_frames.append(icon)
 
+    def _animate_icon(self):
+        """Animate the icon by cycling through frames based on current state"""
+        if self.is_recording:
+            frame_index = self.animation_frame % len(self.recording_frames)
+            self.setIcon(self.recording_frames[frame_index])
+        elif self.is_processing:
+            frame_index = self.animation_frame % len(self.processing_frames)
+            self.setIcon(self.processing_frames[frame_index])
+        
+        self.animation_frame += 1
+
+    # Add the backward compatibility method
     def _animate_recording_icon(self):
         """Animate the recording icon by cycling through frames"""
-        if not self.is_recording:
-            return
+        # This method is kept for backward compatibility but delegates to the new method
+        self._animate_icon()
+
+    def _create_processing_icon(self) -> QIcon:
+        """Create a processing icon with gear/cog indicator"""
+        sizes = [16, 24, 32, 48, 64, 128]
+        icon = QIcon()
+        
+        for size in sizes:
+            pixmap = QPixmap(size, size)
+            pixmap.fill(Qt.transparent)
             
-        frame_index = self.animation_frame % len(self.recording_frames)
-        self.setIcon(self.recording_frames[frame_index])
-        self.animation_frame += 1 
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.Antialiasing)
+            
+            # Draw a blue circle
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(0, 102, 204))  # #0066cc - Primary blue
+            painter.drawEllipse(2, 2, size-4, size-4)
+            
+            # Calculate microphone dimensions
+            mic_width = size // 3
+            mic_height = size // 2
+            mic_x = (size - mic_width) // 2
+            mic_y = size // 5
+            
+            # Draw a microphone body (white rounded rectangle)
+            painter.setBrush(QColor(255, 255, 255))  # White
+            painter.drawRoundedRect(mic_x, mic_y, mic_width, mic_height, mic_width//3, mic_width//3)
+            
+            # Draw a microphone stand
+            stand_width = size // 10
+            stand_height = size // 4
+            stand_x = size // 2 - stand_width // 2
+            stand_y = mic_y + mic_height
+            
+            painter.drawRect(stand_x, stand_y, stand_width, stand_height)
+            
+            # Draw a stand base
+            base_width = size // 2
+            base_height = size // 16
+            base_x = size // 2 - base_width // 2
+            base_y = stand_y + stand_height
+            
+            painter.drawRoundedRect(base_x, base_y, base_width, base_height, base_height//2, base_height//2)
+            
+            # Draw a processing indicator (yellow dot)
+            indicator_size = max(size // 4, 4)  # Ensure it's at least 4px
+            indicator_x = size - indicator_size - 2
+            indicator_y = 2
+            
+            painter.setBrush(QColor(255, 204, 0))  # Yellow
+            painter.drawEllipse(indicator_x, indicator_y, indicator_size, indicator_size)
+            
+            painter.end()
+            icon.addPixmap(pixmap)
+            
+        return icon
+
+    def _create_processing_animation_frames(self):
+        """Create animation frames for processing indicator"""
+        self.processing_frames = []
+        
+        # Create frames with different colors for processing animation (blue → yellow → orange)
+        processing_colors = [
+            QColor(255, 204, 0),    # Yellow
+            QColor(255, 170, 0),    # Yellow-orange
+            QColor(255, 136, 0),    # Orange
+            QColor(255, 102, 0),    # Deep orange
+            QColor(255, 136, 0),    # Orange (reverse)
+            QColor(255, 170, 0),    # Yellow-orange (reverse)
+        ]
+        
+        sizes = [16, 24, 32, 48, 64, 128]
+        
+        for color in processing_colors:
+            icon = QIcon()
+            
+            for size in sizes:
+                pixmap = QPixmap(size, size)
+                pixmap.fill(Qt.transparent)
+                
+                painter = QPainter(pixmap)
+                painter.setRenderHint(QPainter.Antialiasing)
+                
+                # Draw a blue circle
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QColor(0, 102, 204))  # #0066cc - Primary blue
+                painter.drawEllipse(2, 2, size-4, size-4)
+                
+                # Calculate microphone dimensions
+                mic_width = size // 3
+                mic_height = size // 2
+                mic_x = (size - mic_width) // 2
+                mic_y = size // 5
+                
+                # Draw a microphone body (white rounded rectangle)
+                painter.setBrush(QColor(255, 255, 255))  # White
+                painter.drawRoundedRect(mic_x, mic_y, mic_width, mic_height, mic_width//3, mic_width//3)
+                
+                # Draw a microphone stand
+                stand_width = size // 10
+                stand_height = size // 4
+                stand_x = size // 2 - stand_width // 2
+                stand_y = mic_y + mic_height
+                
+                painter.drawRect(stand_x, stand_y, stand_width, stand_height)
+                
+                # Draw a stand base
+                base_width = size // 2
+                base_height = size // 16
+                base_x = size // 2 - base_width // 2
+                base_y = stand_y + stand_height
+                
+                painter.drawRoundedRect(base_x, base_y, base_width, base_height, base_height//2, base_height//2)
+                
+                # Draw a processing indicator with current color
+                indicator_size = max(size // 4, 4)  # Ensure it's at least 4px
+                indicator_x = size - indicator_size - 2
+                indicator_y = 2
+                
+                painter.setBrush(color)
+                painter.drawEllipse(indicator_x, indicator_y, indicator_size, indicator_size)
+                
+                painter.end()
+                icon.addPixmap(pixmap)
+                
+            self.processing_frames.append(icon)
 
     def update_last_transcription_menu_item(self):
         """Update the text in the recent transcription menu item"""

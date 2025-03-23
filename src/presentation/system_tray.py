@@ -1,8 +1,9 @@
 from PySide6.QtWidgets import QSystemTrayIcon, QMenu, QWidget
 from PySide6.QtGui import QIcon, QAction, QFont, QClipboard, QPixmap, QPainter, QColor
-from PySide6.QtCore import Slot, QSize, Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import Slot, QSize, Qt, QTimer
+from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QHBoxLayout, QPushButton
 from pathlib import Path
+from .toast.custom_toast import CustomToast
 import logging
 import platform
 
@@ -16,6 +17,9 @@ class SystemTrayIcon(QSystemTrayIcon):
         self.show_notifications = False
         self.mute_notifications = True
         
+        # Create custom toast
+        self.toast = CustomToast()
+        
         # Set the tray icon with appropriate resolution based on platform
         if platform.system() == 'Windows':
             icon_size = 16  # Windows usually uses 16x16 icons in system tray
@@ -26,8 +30,6 @@ class SystemTrayIcon(QSystemTrayIcon):
         
         # First try to load icon from file
         icon_path = self._find_icon(preferred_icon, "microphone.png")
-        logger.debug(f"Found icon path: {icon_path} (exists: {icon_path.exists()})")
-        
         if icon_path.exists():
             logger.debug(f"Loading tray icon from: {icon_path}")
             try:
@@ -35,9 +37,6 @@ class SystemTrayIcon(QSystemTrayIcon):
                 # Check if the icon is valid/loaded correctly
                 if self._default_icon.isNull():
                     logger.warning("Icon loaded but appears to be null/invalid")
-                    # Try to diagnose the issue
-                    logger.debug(f"Icon size: {QPixmap(str(icon_path)).size()}")
-                    self._default_icon = self._create_default_icon()
                 else:
                     logger.debug("Successfully loaded icon from file")
             except Exception as e:
@@ -51,8 +50,24 @@ class SystemTrayIcon(QSystemTrayIcon):
         self.setIcon(self._default_icon)
         logger.debug("System tray icon set")
         
+        # Create success icon for transcription completion
+        self.success_icon = self._create_success_icon()
+        
+        # Store reference to inactive icon for restoration
+        self.inactive_icon = self._default_icon
+        
         # Set recording icon - we'll create it in memory for consistency
         self.recording_icon = self._create_recording_icon()
+        
+        # Create pulse animation timer
+        self.animation_timer = QTimer(self)
+        self.animation_timer.timeout.connect(self._animate_recording_icon)
+        self.animation_frame = 0
+        self.is_recording = False
+        
+        # Create multiple animation frames
+        self.recording_frames = []
+        self._create_recording_animation_frames()
         
         # Create the tray menu with styled font
         self.menu = QMenu()
@@ -131,7 +146,7 @@ class SystemTrayIcon(QSystemTrayIcon):
         self.setContextMenu(self.menu)
         
         # Set tooltip
-        self.setToolTip("Memo\nReady")
+        self.setToolTip("Voice Recorder\nReady")
         
         # Store the last transcription and processed text
         self.last_transcription = ""
@@ -154,8 +169,7 @@ class SystemTrayIcon(QSystemTrayIcon):
         
         # Start with the base project directory
         try:
-            # More robust base directory detection
-            base_dir = Path(__file__).resolve().parent.parent.parent
+            base_dir = Path(__file__).parent.parent.parent
             logger.debug(f"Base directory: {base_dir}")
             
             # Check if resources directory exists
@@ -164,21 +178,11 @@ class SystemTrayIcon(QSystemTrayIcon):
                 logger.debug(f"Resources directory exists: {resources_dir}")
             else:
                 logger.warning(f"Resources directory not found at: {resources_dir}")
-                # Try alternate location
-                resources_dir = Path.cwd() / "resources"
-                if resources_dir.exists():
-                    logger.debug(f"Found resources directory in current working directory: {resources_dir}")
                 
             # Check if images directory exists
             images_dir = resources_dir / "images"
             if images_dir.exists():
                 logger.debug(f"Images directory exists: {images_dir}")
-                # Check specific files
-                for img_name in [preferred_name, fallback_name]:
-                    img_path = images_dir / img_name
-                    if img_path.exists():
-                        logger.debug(f"Found icon at: {img_path}")
-                        return img_path
             else:
                 logger.warning(f"Images directory not found at: {images_dir}")
         except Exception as e:
@@ -202,12 +206,6 @@ class SystemTrayIcon(QSystemTrayIcon):
             # Relative paths
             Path(__file__).parent / "resources" / preferred_name,
             Path(__file__).parent / "resources" / fallback_name,
-            # Try absolute paths relative to cwd
-            Path.cwd() / "resources" / "images" / preferred_name,
-            Path.cwd() / "resources" / "images" / fallback_name,
-            # Try relative to one directory up from cwd
-            Path.cwd().parent / "resources" / "images" / preferred_name,
-            Path.cwd().parent / "resources" / "images" / fallback_name,
         ]
         
         # Try case-insensitive matching via direct directory scanning
@@ -217,7 +215,7 @@ class SystemTrayIcon(QSystemTrayIcon):
                 for file in images_dir.glob("*.*"):
                     if file.name.lower() == preferred_name.lower() or file.name.lower() == fallback_name.lower():
                         logger.debug(f"Found icon via case-insensitive match: {file}")
-                        return file.resolve()
+                        return file
             
             # Check if icons directory exists and try there too
             icons_dir = resources_dir / "icons"
@@ -225,7 +223,7 @@ class SystemTrayIcon(QSystemTrayIcon):
                 for file in icons_dir.glob("*.*"):
                     if file.name.lower() == preferred_name.lower() or file.name.lower() == fallback_name.lower():
                         logger.debug(f"Found icon via case-insensitive match in icons dir: {file}")
-                        return file.resolve()
+                        return file
         except Exception as e:
             logger.error(f"Error during case-insensitive file search: {e}")
         
@@ -233,9 +231,7 @@ class SystemTrayIcon(QSystemTrayIcon):
         for path in paths:
             if path.exists():
                 logger.debug(f"Found icon at: {path}")
-                return path.resolve()  # Make sure we return an absolute path
-            else:
-                logger.debug(f"Icon not found at: {path}")
+                return path
         
         # Do a last-ditch recursive search in the resources directory
         try:
@@ -244,7 +240,7 @@ class SystemTrayIcon(QSystemTrayIcon):
                     matches = list(resources_dir.glob(pattern))
                     if matches:
                         logger.debug(f"Found icon via recursive search: {matches[0]}")
-                        return matches[0].resolve()
+                        return matches[0]
         except Exception as e:
             logger.error(f"Error during recursive file search: {e}")
                 
@@ -255,9 +251,10 @@ class SystemTrayIcon(QSystemTrayIcon):
     def update_settings(self, settings):
         """Update tray settings from application settings"""
         if hasattr(settings, 'appearance') and settings.appearance:
-            self.show_notifications = settings.appearance.show_notifications
-            self.mute_notifications = settings.appearance.mute_notifications
-            logger.debug(f"Updated notification settings: show_notifications={self.show_notifications}, mute_notifications={self.mute_notifications}")
+            # Override settings to always disable notifications
+            self.show_notifications = False
+            self.mute_notifications = True
+            logger.debug("Notifications have been disabled")
 
     def show_notification(self, title, message, icon=QSystemTrayIcon.MessageIcon.Information, duration=3000):
         """Show a notification if enabled in settings
@@ -284,128 +281,177 @@ class SystemTrayIcon(QSystemTrayIcon):
         if reason == QSystemTrayIcon.DoubleClick:
             if self.last_transcription:
                 self.copy_to_clipboard()
-                self.show_notification(
-                    "Copied to Clipboard",
-                    "The transcription has been copied to your clipboard.",
-                    QSystemTrayIcon.MessageIcon.Information,
-                    2000
-                )
+                # No notification needed, just log the action
+                logger.debug("Double-click triggered: transcription copied to clipboard")
 
     @Slot()
     def on_recording_started(self):
         """Handle recording started signal"""
         self.status_action.setText("● Recording...")
-        self.setToolTip("Memo\nRecording in progress")
+        self.setToolTip("Voice Recorder\nRecording in progress")
         
-        # Change icon to recording icon if it exists
-        self.setIcon(self.recording_icon)
+        # Set the recording state
+        self.is_recording = True
         
-        # Show notification - but fewer and shorter
-        self.show_notification(
-            "Recording",
-            "Started",
-            QSystemTrayIcon.MessageIcon.Information,
-            1000  # Show for 1 second only
+        # Start animation timer - update every 500ms for smooth pulsing
+        self.animation_frame = 0
+        self.animation_timer.start(500)
+        
+        # Show custom toast notification with recording icon - shorter duration (2.5 seconds)
+        self.toast.show_toast("Recording", "Started recording audio", 2500, "recording")
+
+    @Slot()
+    def on_stop_hotkey_pressed(self):
+        """
+        Slot called when the stop hotkey is pressed.
+        Shows a toast notification indicating that recording is stopping.
+        """
+        # Use an emoji icon to grab attention
+        logger.debug("on_stop_hotkey_pressed called - showing toast notification for stopping recording")
+        self.toast.show_toast(
+            "Recording Stopped", 
+            "⏹️ Processing...",
+            duration=3000,  # 3 seconds - shorter duration
+            icon_type="info"
         )
+        
+        logger.debug("Toast notification shown for stopping recording")
 
     @Slot(Path)
     def on_recording_stopped(self, file_path: Path):
         """Handle recording stopped signal"""
-        self.status_action.setText("Ready")
-        self.setToolTip("Memo\nReady")
+        self.status_action.setText("Processing...")
+        self.setToolTip("Voice Recorder\nProcessing recording")
+        
+        # Set recording state
+        self.is_recording = False
+        
+        # Stop animation timer
+        self.animation_timer.stop()
         
         # Restore original icon
-        if hasattr(self, '_default_icon') and not self._default_icon.isNull():
-            logger.debug("Restoring default icon")
+        if hasattr(self, '_default_icon'):
             self.setIcon(self._default_icon)
         else:
-            logger.debug("Recreating default icon")
-            # Re-find the icon file
-            if platform.system() == 'Windows':
-                preferred_icon = "microphone_16.png"
-            else:
-                preferred_icon = "microphone_32.png"
-                
-            icon_path = self._find_icon(preferred_icon, "microphone.png")
+            icon_path = self._find_icon(f"microphone_{16 if platform.system() == 'Windows' else 32}.png", "microphone.png")
             if icon_path.exists():
-                logger.debug(f"Loading tray icon from: {icon_path}")
-                self._default_icon = QIcon(str(icon_path))
-                if self._default_icon.isNull():
-                    logger.warning("Icon loaded but is null, using fallback")
-                    self._default_icon = self._create_default_icon()
-                self.setIcon(self._default_icon)
+                self.setIcon(QIcon(str(icon_path)))
             else:
-                logger.debug("Using fallback icon")
                 self.setIcon(self._create_default_icon())
         
-        # Don't show notification for stopping - will show transcription notification later
-        # Remove this notification entirely
+        # Show custom toast notification with info icon to indicate processing immediately
+        self.toast.show_toast("Processing Recording", "Your recording is being analyzed...", 4000, "info")
 
     @Slot(str)
     def on_recording_failed(self, error_message: str):
         """Handle recording failed signal"""
         self.status_action.setText("Ready")
-        self.setToolTip("Memo\nReady")
+        self.setToolTip("Voice Recorder\nReady")
         
-        # Restore original icon - use same logic as recording_stopped
-        if hasattr(self, '_default_icon') and not self._default_icon.isNull():
-            logger.debug("Restoring default icon")
-            self.setIcon(self._default_icon)
+        # Restore original icon
+        icon_path = self._find_icon(f"microphone_{16 if platform.system() == 'Windows' else 32}.png", "microphone.png")
+        if icon_path.exists():
+            self.setIcon(QIcon(str(icon_path)))
         else:
-            logger.debug("Recreating default icon")
-            # Re-find the icon file
-            if platform.system() == 'Windows':
-                preferred_icon = "microphone_16.png"
-            else:
-                preferred_icon = "microphone_32.png"
-                
-            icon_path = self._find_icon(preferred_icon, "microphone.png")
-            if icon_path.exists():
-                logger.debug(f"Loading tray icon from: {icon_path}")
-                self._default_icon = QIcon(str(icon_path))
-                if self._default_icon.isNull():
-                    logger.warning("Icon loaded but is null, using fallback")
-                    self._default_icon = self._create_default_icon()
-                self.setIcon(self._default_icon)
-            else:
-                logger.debug("Using fallback icon")
-                self.setIcon(self._create_default_icon())
+            self.setIcon(self._create_default_icon())
         
-        # Show error notification (show even if notifications are disabled for important errors)
-        self.showMessage(
-            "Memo - Error",
-            f"Recording failed:\n{error_message}",
-            QSystemTrayIcon.MessageIcon.Critical,
-            5000  # Show for 5 seconds
-        )
+        # Show error notification only for critical errors, but with no sound
+        # Use a very small duration (1000ms) to be less intrusive
+        logger.error(f"Recording failed: {error_message}")
+        
+        # Only show UI notification for truly critical errors that need immediate attention
+        if "Permission denied" in error_message or "Device not found" in error_message:
+            try:
+                # Using a hack to show notification without sound - send empty option
+                self.showMessage(
+                    "Mic Error",
+                    f"Could not access microphone:\n{error_message}",
+                    QSystemTrayIcon.MessageIcon.Critical,
+                    1000  # Short duration
+                )
+            except:
+                # If that fails, just log it
+                pass
 
     @Slot(str)
     def on_transcription_complete(self, text: str):
-        """Handle transcription completion"""
-        self.status_action.setText("Ready")
-        self.setToolTip("Memo\nReady")
+        """
+        Handle transcription complete signal.
+        Updates the menu with the transcription and shows a notification.
+        """
+        logger.debug(f"Transcription complete, text length: {len(text)}")
         
-        # Store the transcription
+        # Store the transcription and update menu items
         self.last_transcription = text
+        self.update_last_transcription_menu_item()
         
-        # Update menu items
-        preview = text[:50] + "..." if len(text) > 50 else text
-        self.recent_transcription_action.setText(preview)
-        self.recent_transcription_action.setEnabled(True)
-        self.copy_action.setEnabled(True)
-        
-        # Automatically copy to clipboard
+        # Copy to clipboard automatically without showing notification
         self.copy_to_clipboard()
         
-        # Show notification with transcribed text, but shorter
-        preview_for_notification = text[:75] + "..." if len(text) > 75 else text
-        self.show_notification(
-            "Transcription Complete",
-            f"{preview_for_notification}\n\nCopied to clipboard",
-            QSystemTrayIcon.MessageIcon.Information,
-            3000  # Show for 3 seconds
+        # Schedule the toast notification with a slight delay to avoid overlap
+        logger.debug("Scheduling transcription complete toast with 1.5s delay")
+        QTimer.singleShot(1500, self._show_transcription_complete_toast)
+
+    def _show_transcription_complete_toast(self):
+        """Show a toast notification indicating transcription is complete"""
+        logger.debug("Showing transcription complete toast")
+        self.toast.show_toast(
+            "Transcription Complete", 
+            "✓ Copied to clipboard",
+            duration=2500,  # 2.5 seconds - shorter duration
+            icon_type="success"
         )
-    
+        logger.debug("Transcription complete toast shown")
+
+    def _flash_success_icon(self):
+        """Flash the icon briefly to indicate transcription is complete"""
+        # Create a success icon (green checkmark)
+        success_icon = self._create_success_icon()
+        
+        # Set to success icon
+        self.setIcon(success_icon)
+        
+        # Schedule restoration of the original icon after 1 second
+        QTimer.singleShot(1000, lambda: self.setIcon(self._default_icon))
+
+    def _create_success_icon(self) -> QIcon:
+        """Create a success icon with a green checkmark"""
+        sizes = [16, 24, 32, 48, 64, 128]
+        icon = QIcon()
+        
+        for size in sizes:
+            pixmap = QPixmap(size, size)
+            pixmap.fill(Qt.transparent)
+            
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.Antialiasing)
+            
+            # Draw a green circle
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(40, 167, 69))  # Bootstrap success green
+            painter.drawEllipse(2, 2, size-4, size-4)
+            
+            # Draw checkmark
+            pen_width = max(2, size // 16)
+            painter.setPen(QColor(255, 255, 255))  # White color for the checkmark
+            
+            # Draw check
+            check_points = [
+                (size * 0.3, size * 0.5),   # Start point
+                (size * 0.45, size * 0.65),  # Middle point
+                (size * 0.7, size * 0.35)    # End point
+            ]
+            
+            for i in range(len(check_points) - 1):
+                x1, y1 = check_points[i]
+                x2, y2 = check_points[i + 1]
+                painter.drawLine(int(x1), int(y1), int(x2), int(y2))
+            
+            painter.end()
+            icon.addPixmap(pixmap)
+            
+        return icon
+
     @Slot(object)
     def on_llm_processing_complete(self, result):
         """Handle LLM processing complete
@@ -422,14 +468,16 @@ class SystemTrayIcon(QSystemTrayIcon):
         self.recent_llm_action.setEnabled(True)
         self.copy_llm_action.setEnabled(True)
         
-        # Show notification with processed text
-        preview_for_notification = result.processed_text[:75] + "..." if len(result.processed_text) > 75 else result.processed_text
-        self.show_notification(
-            f"LLM Processing ({result.processing_type}) Complete",
-            f"{preview_for_notification}",
-            QSystemTrayIcon.MessageIcon.Information,
-            3000  # Show for 3 seconds
-        )
+        # Copy to clipboard
+        self.copy_llm_to_clipboard()
+        
+        # Show toast with preview of processed text and success icon - extended duration
+        toast_preview = result.processed_text[:35] + "..." if len(result.processed_text) > 35 else result.processed_text
+        process_type = result.processing_type.replace("_", " ").title()  # Format the processing type for display
+        self.toast.show_toast(f"{process_type} Complete", toast_preview, 4000, "success")
+        
+        # Flash icon to indicate completion
+        self._flash_success_icon()
 
     def copy_to_clipboard(self):
         """Copy the last transcription to clipboard"""
@@ -560,4 +608,89 @@ class SystemTrayIcon(QSystemTrayIcon):
             painter.end()
             icon.addPixmap(pixmap)
             
-        return icon 
+        return icon
+
+    def _create_recording_animation_frames(self):
+        """Create animation frames for recording indicator"""
+        self.recording_frames = []
+        
+        # Create 4 frames with different opacity levels for pulsing effect
+        opacity_levels = [1.0, 0.8, 0.6, 0.8]  # Pulse effect
+        sizes = [16, 24, 32, 48, 64, 128]
+        
+        for opacity in opacity_levels:
+            icon = QIcon()
+            
+            for size in sizes:
+                pixmap = QPixmap(size, size)
+                pixmap.fill(Qt.transparent)
+                
+                painter = QPainter(pixmap)
+                painter.setRenderHint(QPainter.Antialiasing)
+                
+                # Draw a blue circle
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QColor(0, 102, 204))  # #0066cc - Primary blue
+                painter.drawEllipse(2, 2, size-4, size-4)
+                
+                # Calculate microphone dimensions
+                mic_width = size // 3
+                mic_height = size // 2
+                mic_x = (size - mic_width) // 2
+                mic_y = size // 5
+                
+                # Draw a microphone body (white rounded rectangle)
+                painter.setBrush(QColor(255, 255, 255))  # White
+                painter.drawRoundedRect(mic_x, mic_y, mic_width, mic_height, mic_width//3, mic_width//3)
+                
+                # Draw a microphone stand
+                stand_width = size // 10
+                stand_height = size // 4
+                stand_x = size // 2 - stand_width // 2
+                stand_y = mic_y + mic_height
+                
+                painter.drawRect(stand_x, stand_y, stand_width, stand_height)
+                
+                # Draw a stand base
+                base_width = size // 2
+                base_height = size // 16
+                base_x = size // 2 - base_width // 2
+                base_y = stand_y + stand_height
+                
+                painter.drawRoundedRect(base_x, base_y, base_width, base_height, base_height//2, base_height//2)
+                
+                # Draw a red recording indicator with varying opacity
+                indicator_size = max(size // 4, 4)  # Ensure it's at least 4px
+                indicator_x = size - indicator_size - 2
+                indicator_y = 2
+                
+                recording_color = QColor(255, 59, 48, int(255 * opacity))  # #ff3b30 with variable opacity
+                painter.setBrush(recording_color)
+                painter.drawEllipse(indicator_x, indicator_y, indicator_size, indicator_size)
+                
+                painter.end()
+                icon.addPixmap(pixmap)
+                
+            self.recording_frames.append(icon)
+
+    def _animate_recording_icon(self):
+        """Animate the recording icon by cycling through frames"""
+        if not self.is_recording:
+            return
+            
+        frame_index = self.animation_frame % len(self.recording_frames)
+        self.setIcon(self.recording_frames[frame_index])
+        self.animation_frame += 1 
+
+    def update_last_transcription_menu_item(self):
+        """Update the text in the recent transcription menu item"""
+        if self.last_transcription:
+            # Create a preview (truncated text) for the menu item
+            preview = self.last_transcription[:50] + "..." if len(self.last_transcription) > 50 else self.last_transcription
+            self.recent_transcription_action.setText(preview)
+            self.recent_transcription_action.setEnabled(True)
+            self.copy_action.setEnabled(True)
+        else:
+            self.recent_transcription_action.setText("No recent transcriptions")
+            self.recent_transcription_action.setEnabled(False)
+            self.copy_action.setEnabled(False) 

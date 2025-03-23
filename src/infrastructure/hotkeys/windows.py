@@ -109,7 +109,9 @@ class WindowsHotkeyHandler(HotkeyHandler):
                             # Second press (stop recording)
                             self._is_key_held = False
                             logger.debug("Toggling state to STOPPED (emitting hotkey_released)")
+                            logger.debug("This should trigger SystemTrayIcon.on_stop_hotkey_pressed via signal connection")
                             self.hotkey_released.emit()
+                            logger.debug("hotkey_released signal emitted")
                 else:
                     logger.warning(f"Received hotkey ID {hotkey_id} doesn't match any registered hotkey")
                 

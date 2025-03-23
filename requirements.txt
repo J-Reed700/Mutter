@@ -9,7 +9,9 @@ wave>=0.0.2
 
 # Transcription dependencies
 faster-whisper>=0.6.0
-torch>=2.0.0
+
+# API client
+requests>=2.31.0
 
 # Windows-specific dependencies
 pywin32>=303; platform_system=="Windows"
@@ -18,4 +20,9 @@ pywin32>=303; platform_system=="Windows"
 pyinstaller>=5.7.0
 
 # Icon generation dependencies
-cairosvg>=2.5.2 
+cairosvg>=2.5.2
+
+# Optional LLM dependencies (comment out if not needed)
+# Install these only if you want local LLM processing (requires capable hardware)
+# torch>=2.0.0
+# transformers>=4.20.0 

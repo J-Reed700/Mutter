@@ -51,7 +51,7 @@ class ApplicationService(QObject):
         # Initialize transcription service
         self.transcriber = Transcriber(
             model_size=self.settings.transcription.model,
-            device=self.settings.transcription.device,
+            device=self.settings.transcription.device,  # This value will be cleaned in the Transcriber class
             compute_type="int8"
         )
         
@@ -149,20 +149,117 @@ class ApplicationService(QObject):
         )
         
         # Check if audio settings changed
-        if (old_settings.audio.sample_rate != self.settings.audio.sample_rate or
+        audio_settings_changed = (
+            old_settings.audio.sample_rate != self.settings.audio.sample_rate or
             old_settings.audio.channels != self.settings.audio.channels or
-            old_settings.audio.input_device != self.settings.audio.input_device):
+            old_settings.audio.input_device != self.settings.audio.input_device
+        )
+        
+        if audio_settings_changed:
+            logger.debug(f"Audio settings changed, recreating audio recorder. Old device: {old_settings.audio.input_device}, New device: {self.settings.audio.input_device}")
+            logger.debug(f"Old sample rate: {old_settings.audio.sample_rate}, New sample rate: {self.settings.audio.sample_rate}")
             
-            logger.debug("Audio settings changed, recreating audio recorder")
+            # First, check if the new device exists and get its supported sample rate
+            sample_rate = self.settings.audio.sample_rate
+            device_id = None
+            
+            try:
+                if self.settings.audio.input_device not in ['default', None]:
+                    # Try to find the device and its default sample rate
+                    devices = sd.query_devices()
+                    matching_devices = []
+                    for i, dev in enumerate(devices):
+                        if dev['name'] == self.settings.audio.input_device and dev['max_input_channels'] > 0:
+                            matching_devices.append((i, dev))
+                    
+                    if matching_devices:
+                        # Prefer WASAPI device if available
+                        wasapi_device = None
+                        for idx, dev in matching_devices:
+                            host_api = dev.get('hostapi', 0)
+                            try:
+                                host_name = sd.query_hostapis(host_api).get('name', 'Unknown').lower()
+                                if "wasapi" in host_name:
+                                    wasapi_device = (idx, dev)
+                                    break
+                            except Exception as e:
+                                logger.error(f"Error querying host API: {e}")
+                        
+                        # Use WASAPI device if found, else use first matching device
+                        device_info = wasapi_device[1] if wasapi_device else matching_devices[0][1]
+                        device_id = wasapi_device[0] if wasapi_device else matching_devices[0][0]
+                        
+                        # Get device's default sample rate
+                        default_sample_rate = int(device_info.get('default_samplerate', 44100))
+                        
+                        # Check if our configured sample rate might not be supported
+                        if sample_rate != default_sample_rate:
+                            logger.warning(f"Device '{device_info['name']}' default sample rate is {default_sample_rate}Hz, but configured for {sample_rate}Hz")
+                            logger.info(f"Adjusting to use device's default sample rate: {default_sample_rate}Hz")
+                            
+                            # Update the sample rate in settings
+                            self.settings.audio.sample_rate = default_sample_rate
+                            sample_rate = default_sample_rate
+                            
+                            # Save the updated settings
+                            try:
+                                self.settings_repository.save(self.settings)
+                                logger.info("Updated settings with device's default sample rate")
+                            except Exception as e:
+                                logger.error(f"Error saving updated settings: {e}")
+            except Exception as e:
+                logger.error(f"Error checking device sample rate: {e}")
+            
             # Create new audio recorder with updated settings
             self.audio_recorder = AudioRecorder(
-                sample_rate=self.settings.audio.sample_rate,
+                sample_rate=sample_rate,
                 channels=self.settings.audio.channels,
                 device=self.settings.audio.input_device
             )
             
             # Update recording service with new audio recorder
-            self.recording_service.audio_recorder = self.audio_recorder
+            if hasattr(self, 'recording_service'):
+                logger.debug("Updating recording service with new audio recorder")
+                self.recording_service.audio_recorder = self.audio_recorder
+                
+                # Ensure recording service has updated settings reference
+                self.recording_service.settings = self.settings
+                
+                # If we're currently recording, restart the recording with the new device
+                if self.recording_service.is_recording:
+                    logger.info("Restarting ongoing recording with new audio settings")
+                    self.recording_service.stop_recording()
+                    self.recording_service.start_recording()
+            
+            # Log details about the new recorder's device
+            try:
+                if self.settings.audio.input_device is None or self.settings.audio.input_device == 'default':
+                    default_device_idx = sd.default.device[0]
+                    if default_device_idx is not None:
+                        device_info = sd.query_devices(default_device_idx)
+                        logger.debug(f"Using default device: {device_info['name']} (ID: {default_device_idx})")
+                else:
+                    # This will utilize the new _resolve_device_id method in AudioRecorder
+                    devices = sd.query_devices()
+                    # Find matching devices and log them
+                    matching_devices = []
+                    for i, dev in enumerate(devices):
+                        if dev['name'] == self.settings.audio.input_device and dev['max_input_channels'] > 0:
+                            matching_devices.append((i, dev))
+                            
+                    if matching_devices:
+                        logger.debug(f"Found {len(matching_devices)} devices matching '{self.settings.audio.input_device}':")
+                        for idx, dev in matching_devices:
+                            host_api = dev.get('hostapi', 0)
+                            try:
+                                host_name = sd.query_hostapis(host_api).get('name', 'Unknown')
+                                logger.debug(f"  ID {idx}: {dev['name']} ({host_name}, {dev['max_input_channels']} ch, default rate: {dev.get('default_samplerate')}Hz)")
+                            except:
+                                logger.debug(f"  ID {idx}: {dev['name']} ({dev['max_input_channels']} ch, default rate: {dev.get('default_samplerate')}Hz)")
+                    else:
+                        logger.warning(f"No devices found matching '{self.settings.audio.input_device}'")
+            except Exception as e:
+                logger.error(f"Error querying audio device details: {e}")
         
         # Update transcription settings and reinitialize model if needed
         if transcription_model_changed:
@@ -224,8 +321,8 @@ class ApplicationService(QObject):
                 # Re-initialize the appropriate processor based on settings
                 self.recording_service._initialize_llm_processor()
         else:
-            # Even if specific LLM settings didn't change, update the recording service settings
-            # to ensure any other settings changes are propagated
+            # Always update the recording service settings to ensure any other settings 
+            # changes are propagated
             self.recording_service.settings = self.settings
         
         # Update appearance settings in the UI

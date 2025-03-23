@@ -29,7 +29,8 @@ class Transcriber:
             compute_type: Compute type for inference ("int8", "fp16", "fp32")
         """
         self.model_size = model_size
-        self.device = device
+        # Clean up device string to ensure it's just "cpu" or "cuda"
+        self.device = "cpu" if "cpu" in device.lower() else "cuda" if "cuda" in device.lower() else "cpu"
         self.compute_type = compute_type
         self.model = None
         
@@ -42,13 +43,12 @@ class Transcriber:
         logger.info(f"Using model cache directory: {model_cache_dir}")
         
         try:
-            logger.info(f"Initializing Whisper model '{model_size}' on {device} with {compute_type}")
+            logger.info(f"Initializing Whisper model '{model_size}' on {self.device} with {compute_type}")
             
             # If device is set to cuda but CUDA is not available, fall back to CPU
-            if device == "cuda" and not torch.cuda.is_available():
+            if self.device == "cuda" and not torch.cuda.is_available():
                 logger.warning("CUDA requested but not available, falling back to CPU")
                 self.device = "cpu"
-                device = "cpu"
             
             # Check if the model is already downloaded
             model_loaded = False
@@ -58,13 +58,13 @@ class Transcriber:
             else:
                 logger.info(f"Model not found locally, will download to {model_cache_dir}")
             
-            # Initialize the model with the cache directory
-            self.model = WhisperModel(model_size, device=device, compute_type=compute_type, download_root=model_cache_dir)
+            # Initialize the model with the cache directory using clean device value
+            self.model = WhisperModel(model_size, device=self.device, compute_type=compute_type, download_root=model_cache_dir)
             logger.info(f"Successfully loaded model: {model_size}")
         except Exception as e:
             logger.error(f"Failed to initialize Whisper model: {e}")
             # If initialization failed with CUDA, try to fall back to CPU
-            if device == "cuda":
+            if self.device == "cuda":
                 logger.info("Attempting to initialize model on CPU instead")
                 try:
                     self.device = "cpu"

@@ -79,6 +79,15 @@ class Application:
             self.app_service.recording_service.recording_failed.connect(self.tray.on_recording_failed)
             self.app_service.recording_service.transcription_complete.connect(self.tray.on_transcription_complete)
             
+            # Connect the stop_requested signal to show toast before processing starts
+            self.app_service.recording_service.stop_requested.connect(self.tray.on_stop_hotkey_pressed)
+            
+            # Connect hotkey signals - but not redundantly to on_stop_hotkey_pressed
+            logger.debug("Connecting hotkey signals")
+            # Don't connect hotkey_released to on_stop_hotkey_pressed anymore, we use stop_requested instead
+            # self.app_service.recording_service.hotkey_handler.hotkey_released.connect(self.tray.on_stop_hotkey_pressed)
+            logger.debug("Connection established for hotkey signals")
+            
             # Connect LLM processing signal
             self.app_service.recording_service.llm_processing_complete.connect(self.tray.on_llm_processing_complete)
             

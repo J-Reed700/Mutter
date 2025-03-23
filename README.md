@@ -8,6 +8,7 @@ A powerful voice recording application with local speech-to-text transcription. 
 - Local speech-to-text transcription using Whisper
 - System tray integration for easy access
 - Automatic clipboard copy of transcriptions
+- Optional LLM processing for summarization (requires additional dependencies)
 - Cross-platform support (Windows, macOS coming soon)
 
 ## Installation
@@ -33,14 +34,40 @@ A powerful voice recording application with local speech-to-text transcription. 
     ```
 
 3. Install the dependencies using Poetry:
+
+   # Optional: Lock the dependencies
    ```
+   python -m poetry lock
+   ```
+   ```
+   # For basic functionality (without local LLM processing)
    python -m poetry install
+   
+   # To include local LLM processing capabilities (requires more resources)
+   python -m poetry install --extras llm
    ```
 
 4. Activate the virtual environment created by Poetry:
    ```
    python -m poetry shell
    ```
+
+### Optional LLM Processing
+
+The application supports two modes for LLM processing:
+
+1. **External API Mode** (Default, no extra dependencies): 
+   - Uses a local LLM API server (like Ollama) at http://localhost:8080/v1
+   - Requires you to run an LLM server separately
+
+2. **Embedded Mode** (Requires additional dependencies):
+   - Uses PyTorch and Transformers libraries to run models directly in the app
+   - Requires more system resources (especially for larger models)
+   - Install with `python -m poetry install --extras llm` or manually install torch/transformers
+
+If you're using the application on multiple machines:
+- For your main/powerful machine: Install with LLM extras for full functionality
+- For secondary/less powerful machines: Install only the basic dependencies and use External API mode
 
 ## Usage
 
@@ -63,6 +90,18 @@ A powerful voice recording application with local speech-to-text transcription. 
 
 8. You can press `Ctrl+Shift+Q` to quit the application.
 
+### LLM Processing
+
+1. To use LLM processing, you need to have an LLM server running.
+
+2. The default server is Ollama, but you can use any other LLM server that supports the API.
+
+3. You can configure the server in the settings.
+
+4. You can also use the `python -m poetry install --extras llm` command to install the LLM dependencies and run the application with embedded LLM processing.
+
+5. To use the embedded LLM processing, press `Ctrl+Shift+P` to process the current transcription on clipboard.
+
 ## Configuration
 
 - Click on the system tray icon and select "Settings" to configure:
@@ -74,3 +113,32 @@ A powerful voice recording application with local speech-to-text transcription. 
 ## Building Executables
 
 To build standalone executables:
+
+```
+python package_builder.py
+```
+
+Note: The default build does NOT include local LLM dependencies (PyTorch/Transformers) to keep the package size manageable. If you need embedded LLM functionality, make sure to uncomment the corresponding lines in requirements.txt before building.
+
+## Audio Device Selection
+
+Mutter supports various audio input devices and handles multiple devices with the same name. The application:
+
+1. **Displays details about each audio device** in the settings menu, including:
+   - Device name
+   - Audio API type (WASAPI, DirectSound, etc. on Windows)
+   - Channel count
+   - Sample rate
+
+2. **Automatically detects and suggests optimal sample rates** when you select a device, setting the sample rate to match the device's native sample rate.
+
+3. **Prioritizes high-quality audio APIs** when multiple devices with the same name exist:
+   - On Windows, WASAPI is preferred over DirectSound and WDM-KS
+   - This ensures better audio quality and compatibility
+
+4. **Dynamically adjusts to device capabilities** by validating that the selected sample rate is supported by the device.
+
+If you experience issues with audio recording:
+- Try selecting a different audio API for your device (e.g., WASAPI vs DirectSound)
+- Check that the sample rate matches what your device supports
+- Use the "Default" device option to use the system's default settings

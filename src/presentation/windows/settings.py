@@ -199,6 +199,8 @@ class SettingsWindow(QMainWindow):
         self.device_combo.setMinimumWidth(300)
         self.device_combo.setMinimumHeight(30)
         self._populate_audio_devices()
+        
+        # Mark settings changed but don't call _on_device_changed here to avoid adding duplicate rates
         self.device_combo.currentIndexChanged.connect(self._mark_settings_changed)
         device_layout.addRow("Input Device:", self.device_combo)
         
@@ -219,9 +221,19 @@ class SettingsWindow(QMainWindow):
         self.sample_rate_combo = QComboBox()
         self.sample_rate_combo.setMinimumWidth(200)
         self.sample_rate_combo.setMinimumHeight(30)
-        for rate in [8000, 16000, 44100, 48000]:
+        for rate in [8000, 16000, 22050, 32000, 44100, 48000, 96000]:
             self.sample_rate_combo.addItem(f"{rate} Hz", rate)
-        self.sample_rate_combo.setCurrentText(f"{self.settings.audio.sample_rate} Hz")
+        
+        # Find and select the current sample rate
+        for i in range(self.sample_rate_combo.count()):
+            if self.sample_rate_combo.itemData(i) == self.settings.audio.sample_rate:
+                self.sample_rate_combo.setCurrentIndex(i)
+                break
+        else:
+            # If not found, add it
+            self.sample_rate_combo.addItem(f"{self.settings.audio.sample_rate} Hz", self.settings.audio.sample_rate)
+            self.sample_rate_combo.setCurrentIndex(self.sample_rate_combo.count() - 1)
+        
         self.sample_rate_combo.currentIndexChanged.connect(self._mark_settings_changed)
         settings_layout.addRow("Sample Rate:", self.sample_rate_combo)
         
@@ -575,14 +587,122 @@ class SettingsWindow(QMainWindow):
         # Add default device
         self.device_combo.addItem("Default", "default")
         
-        # Add input devices
+        # First, check for duplicate device names
+        device_names = {}
         for i, dev in enumerate(devices):
             if dev['max_input_channels'] > 0:
-                name = f"{dev['name']} ({dev['max_input_channels']} channels)"
-                self.device_combo.addItem(name, dev['name'])
+                name = dev['name']
+                if name in device_names:
+                    device_names[name].append(i)
+                else:
+                    device_names[name] = [i]
+                    
+        # Add input devices
+        for name, indices in device_names.items():
+            # If only one device with this name, just add it normally
+            if len(indices) == 1:
+                idx = indices[0]
+                dev = devices[idx]
+                # Include sample rate in display
+                sample_rate = int(dev.get('default_samplerate', 44100))
+                display_name = f"{dev['name']} ({dev['max_input_channels']} ch, {sample_rate} Hz)"
+                self.device_combo.addItem(display_name, dev['name'])
                 
                 if dev['name'] == self.settings.audio.input_device:
                     self.device_combo.setCurrentIndex(self.device_combo.count() - 1)
+            else:
+                # Multiple devices with same name, add API type to differentiate
+                for idx in indices:
+                    dev = devices[idx]
+                    try:
+                        host_api = dev.get('hostapi', 0)
+                        host_info = sd.query_hostapis(host_api)
+                        host_name = host_info.get('name', 'Unknown')
+                        
+                        # Include sample rate in display
+                        sample_rate = int(dev.get('default_samplerate', 44100))
+                        display_name = f"{dev['name']} ({host_name}, {dev['max_input_channels']} ch, {sample_rate} Hz)"
+                        # Still use just the device name as the data, as that's what the recorder expects
+                        self.device_combo.addItem(display_name, dev['name'])
+                        
+                        if dev['name'] == self.settings.audio.input_device:
+                            self.device_combo.setCurrentIndex(self.device_combo.count() - 1)
+                    except Exception as e:
+                        logger.error(f"Error getting host API info: {e}")
+                        # Fallback to simpler display if we can't get host API info
+                        sample_rate = int(dev.get('default_samplerate', 44100))
+                        display_name = f"{dev['name']} (ID: {idx}, {dev['max_input_channels']} ch, {sample_rate} Hz)"
+                        self.device_combo.addItem(display_name, dev['name'])
+        
+        # Connect device change signal to update sample rate
+        # Disconnect first to avoid multiple connections
+        try:
+            self.device_combo.currentIndexChanged.disconnect(self._on_device_changed)
+        except:
+            pass
+        self.device_combo.currentIndexChanged.connect(self._on_device_changed)
+    
+    def _on_device_changed(self, index):
+        """Handle device selection changes"""
+        self._mark_settings_changed()
+        
+        # Get selected device and update sample rate dropdown to match device's default
+        device_name = self.device_combo.currentData()
+        
+        if device_name == "default":
+            # For default device, just use system default values
+            return
+            
+        try:
+            # Find the device(s) with this name
+            devices = sd.query_devices()
+            matching_devices = []
+            for i, dev in enumerate(devices):
+                if dev['name'] == device_name and dev['max_input_channels'] > 0:
+                    matching_devices.append((i, dev))
+            
+            if matching_devices:
+                # Prefer WASAPI device if available
+                wasapi_device = None
+                for idx, dev in matching_devices:
+                    host_api = dev.get('hostapi', 0)
+                    try:
+                        host_name = sd.query_hostapis(host_api).get('name', 'Unknown').lower()
+                        if "wasapi" in host_name:
+                            wasapi_device = (idx, dev)
+                            break
+                    except Exception as e:
+                        logger.error(f"Error querying host API: {e}")
+                
+                # Use WASAPI device if found, else use first matching device
+                device_info = wasapi_device[1] if wasapi_device else matching_devices[0][1]
+                
+                # Get device's default sample rate
+                default_sample_rate = int(device_info.get('default_samplerate', 44100))
+                
+                # Find and select the closest sample rate in the dropdown
+                closest_index = -1
+                closest_diff = float('inf')
+                
+                for i in range(self.sample_rate_combo.count()):
+                    rate = self.sample_rate_combo.itemData(i)
+                    diff = abs(rate - default_sample_rate)
+                    if diff < closest_diff:
+                        closest_diff = diff
+                        closest_index = i
+                
+                if closest_index >= 0:
+                    # If we don't have an exact match, add the device's default rate
+                    if closest_diff > 0:
+                        # Add the device's default sample rate to the dropdown
+                        self.sample_rate_combo.addItem(f"{default_sample_rate} Hz (device default)", default_sample_rate)
+                        self.sample_rate_combo.setCurrentIndex(self.sample_rate_combo.count() - 1)
+                    else:
+                        self.sample_rate_combo.setCurrentIndex(closest_index)
+                        
+                    logger.debug(f"Selected sample rate {self.sample_rate_combo.currentText()} for device {device_name}")
+        except Exception as e:
+            logger.error(f"Error updating sample rate for device: {e}")
     
     def _mark_settings_changed(self):
         """Mark that settings have been changed"""

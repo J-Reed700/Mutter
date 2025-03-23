@@ -63,6 +63,95 @@ class AudioRecorder:
         except Exception as e:
             logger.error(f"Error querying audio devices: {e}")
     
+    def _resolve_device_id(self, device_name):
+        """Resolve device name to a device ID to handle multiple devices with same name"""
+        if device_name is None or device_name == 'default':
+            return None  # Use system default
+            
+        try:
+            devices = sd.query_devices()
+            # Look for all devices with this name
+            matching_devices = []
+            for i, dev in enumerate(devices):
+                if dev['name'] == device_name and dev['max_input_channels'] > 0:
+                    matching_devices.append(i)
+                    
+            if not matching_devices:
+                logger.warning(f"No device found with name '{device_name}', using default")
+                return None
+            elif len(matching_devices) == 1:
+                logger.debug(f"Found a single device matching '{device_name}': ID {matching_devices[0]}")
+                device_id = matching_devices[0]
+                self._validate_device_settings(device_id)
+                return device_id
+            else:
+                # Multiple devices with same name - prefer WASAPI on Windows (usually better quality)
+                wasapi_device = None
+                for dev_id in matching_devices:
+                    dev_info = devices[dev_id]
+                    host_api = dev_info.get('hostapi', 0)
+                    host_name = sd.query_hostapis(host_api).get('name', '').lower()
+                    if "wasapi" in host_name:
+                        logger.debug(f"Multiple devices matched '{device_name}', selecting WASAPI device: ID {dev_id}")
+                        wasapi_device = dev_id
+                        break
+                
+                # If found a WASAPI device, use it
+                if wasapi_device is not None:
+                    self._validate_device_settings(wasapi_device)
+                    return wasapi_device
+                
+                # If no WASAPI found, just use the first one
+                logger.debug(f"Multiple devices matched '{device_name}', using first one: ID {matching_devices[0]}")
+                self._validate_device_settings(matching_devices[0])
+                return matching_devices[0]
+        except Exception as e:
+            logger.error(f"Error resolving device ID: {e}")
+            return None
+    
+    def _validate_device_settings(self, device_id):
+        """Check if current sample rate is supported by the device and adjust if needed"""
+        try:
+            if device_id is None:
+                return
+                
+            device_info = sd.query_devices(device_id)
+            device_sample_rate = int(device_info.get('default_samplerate', 44100))
+            
+            # If current sample rate doesn't match device's default sample rate
+            if self.sample_rate != device_sample_rate:
+                logger.warning(f"Device '{device_info['name']}' prefers sample rate {device_sample_rate}Hz, " 
+                              f"but configured for {self.sample_rate}Hz")
+                
+                # Try to query supported sample rates if available
+                supported_rates = []
+                try:
+                    # Check if this device explicitly lists supported rates
+                    if hasattr(device_info, 'supported_samplerates'):
+                        supported_rates = device_info['supported_samplerates']
+                    
+                    # If no explicit list, try some common sample rates
+                    # Attempt an educated guess based on the default sample rate
+                    if not supported_rates:
+                        if device_sample_rate == 48000:
+                            supported_rates = [48000, 96000, 24000]
+                        elif device_sample_rate == 44100:
+                            supported_rates = [44100, 88200, 22050]
+                        else:
+                            supported_rates = [device_sample_rate]
+                except Exception as e:
+                    logger.debug(f"Error querying supported sample rates: {e}")
+                    supported_rates = [device_sample_rate]  # Default to device's default rate
+                
+                # Set sample rate to device's default
+                logger.info(f"Automatically adjusting sample rate to {device_sample_rate}Hz for device '{device_info['name']}'")
+                self.sample_rate = device_sample_rate
+                
+                # Log supported rates
+                logger.debug(f"Device likely supports these sample rates: {supported_rates}")
+        except Exception as e:
+            logger.error(f"Error validating device settings: {e}")
+    
     def start_recording(self):
         """Start recording audio in a separate thread."""
         with self._lock:
@@ -74,20 +163,26 @@ class AudioRecorder:
             
             def record_audio():
                 try:
-                    # Convert 'default' to None for sounddevice
-                    actual_device = None if self.device == 'default' else self.device
+                    # Resolve device name to device ID to handle multiple devices with same name
+                    actual_device = self._resolve_device_id(self.device)
                     
                     logger.debug(f"Starting recording thread with device={self.device} (using actual_device={actual_device}), "
                                 f"sample_rate={self.sample_rate}, channels={self.channels}")
                     
                     # Additional debug info for device that will be used
                     try:
-                        default_device_idx = sd.default.device[0]
-                        if actual_device is None and default_device_idx is not None:
-                            device_info = sd.query_devices(default_device_idx)
-                            logger.debug(f"Recording with default device: {device_info['name']}")
-                            logger.debug(f"Device details: {device_info}")
-                        elif actual_device is not None:
+                        if actual_device is None:
+                            default_device_idx = sd.default.device[0]
+                            if default_device_idx is not None:
+                                device_info = sd.query_devices(default_device_idx)
+                                logger.debug(f"Recording with default device: {device_info['name']}")
+                                logger.debug(f"Device details: {device_info}")
+                                
+                                # Validate sample rate for default device
+                                if self.sample_rate != int(device_info.get('default_samplerate', 44100)):
+                                    logger.warning(f"Default device prefers sample rate {device_info.get('default_samplerate')}Hz, "
+                                                 f"but configured for {self.sample_rate}Hz. This may cause issues.")
+                        else:
                             device_info = sd.query_devices(actual_device)
                             logger.debug(f"Recording with device: {device_info['name']}")
                             logger.debug(f"Device details: {device_info}")

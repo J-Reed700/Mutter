@@ -2,8 +2,6 @@ import logging
 from typing import Optional, List
 from dataclasses import dataclass
 import threading
-import torch
-from transformers import pipeline
 import os
 from pathlib import Path
 
@@ -11,6 +9,22 @@ from pathlib import Path
 from .processor import LLMProcessingResult
 
 logger = logging.getLogger(__name__)
+
+# Flag to track if PyTorch dependencies are available
+TORCH_AVAILABLE = False
+TRANSFORMERS_AVAILABLE = False
+
+# Try to import PyTorch and transformers, but don't fail if they're not available
+try:
+    import torch
+    TORCH_AVAILABLE = True
+    try:
+        from transformers import pipeline, AutoModelForSeq2SeqLM, AutoTokenizer, AutoModelForCausalLM
+        TRANSFORMERS_AVAILABLE = True
+    except ImportError:
+        logger.warning("Transformers library not available. Embedded LLM functionality will be disabled.")
+except ImportError:
+    logger.warning("PyTorch not available. Embedded LLM functionality will be disabled.")
 
 class EmbeddedTextProcessor:
     """Process text using lightweight models embedded directly in the application"""
@@ -34,6 +48,12 @@ class EmbeddedTextProcessor:
         
         logger.info(f"Using model cache directory for LLM: {model_cache_dir}")
         
+        # Check if dependencies are available
+        if not TORCH_AVAILABLE or not TRANSFORMERS_AVAILABLE:
+            logger.warning("Required dependencies for embedded LLM are not available.")
+            self.available = False
+            return
+        
         # Try to load the model in a background thread to not block the UI
         self._load_model_background()
     
@@ -46,7 +66,7 @@ class EmbeddedTextProcessor:
     
     def _load_model_background(self):
         """Load the model in a background thread"""
-        if self._is_loading:
+        if self._is_loading or not TORCH_AVAILABLE or not TRANSFORMERS_AVAILABLE:
             return
             
         with self._loading_lock:
@@ -58,6 +78,13 @@ class EmbeddedTextProcessor:
     
     def _load_model(self):
         """Load the model from Hugging Face"""
+        if not TORCH_AVAILABLE or not TRANSFORMERS_AVAILABLE:
+            logger.warning("Cannot load embedded model: dependencies not available")
+            self.available = False
+            with self._loading_lock:
+                self._is_loading = False
+            return
+            
         try:
             # Check if model is already cached
             model_cache_dir = self._get_model_cache_path()
@@ -81,8 +108,6 @@ class EmbeddedTextProcessor:
             # For summarization
             if "bart" in self.model_name.lower() or "t5" in self.model_name.lower():
                 # These models can be CPU-only if needed
-                from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
-                
                 self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
                 self.model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name)
                 self.model.to(device)
@@ -91,8 +116,6 @@ class EmbeddedTextProcessor:
             else:
                 # LLMs often need GPU
                 try:
-                    from transformers import AutoModelForCausalLM, AutoTokenizer
-                    
                     self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
                     self.model = AutoModelForCausalLM.from_pretrained(self.model_name)
                     self.model.to(device)
@@ -128,6 +151,10 @@ class EmbeddedTextProcessor:
     
     def get_available_models(self) -> List[str]:
         """Get list of available built-in models"""
+        if not TORCH_AVAILABLE or not TRANSFORMERS_AVAILABLE:
+            logger.warning("Cannot list embedded models: dependencies not available")
+            return []
+            
         return [
             "distilbart-cnn-12-6",           # Small summarization model
             "facebook/bart-large-cnn",       # Better quality but larger
@@ -144,6 +171,10 @@ class EmbeddedTextProcessor:
         Returns:
             LLMProcessingResult or None if processing failed
         """
+        if not TORCH_AVAILABLE or not TRANSFORMERS_AVAILABLE:
+            logger.warning("Cannot use embedded LLM: dependencies not available")
+            return None
+            
         if not self.available:
             if not self._is_loading:
                 # Try to load the model if it's not already loading
@@ -204,6 +235,10 @@ class EmbeddedTextProcessor:
         Returns:
             LLMProcessingResult or None if processing failed
         """
+        if not TORCH_AVAILABLE or not TRANSFORMERS_AVAILABLE:
+            logger.warning("Cannot use embedded LLM: dependencies not available")
+            return None
+            
         # For the embedded model we just redirect to summarize
         # as it can't handle custom prompts as effectively
         logger.info("Custom prompts not fully supported in embedded mode, using summarization")
@@ -211,6 +246,10 @@ class EmbeddedTextProcessor:
 
     def process_text(self, text: str, max_length: int = 150, min_length: int = 40) -> str:
         """Process text using the embedded model."""
+        if not TORCH_AVAILABLE or not TRANSFORMERS_AVAILABLE:
+            logger.warning("Cannot use embedded LLM: dependencies not available")
+            return text
+            
         try:
             # Load model if not loaded
             if self.model is None or self.tokenizer is None:
@@ -219,8 +258,6 @@ class EmbeddedTextProcessor:
             # Use model type to determine processing approach
             if "bart" in self.model_name.lower() or "t5" in self.model_name.lower():
                 # For summarization models (BART, T5)
-                import torch
-                
                 inputs = self.tokenizer(text, return_tensors="pt", max_length=1024, truncation=True)
                 
                 # Move inputs to the same device as the model

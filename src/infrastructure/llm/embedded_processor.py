@@ -14,12 +14,24 @@ logger = logging.getLogger(__name__)
 TORCH_AVAILABLE = False
 TRANSFORMERS_AVAILABLE = False
 
+# Define variables at the module level to avoid UnboundLocalError
+AutoTokenizer = None
+AutoModelForSeq2SeqLM = None
+AutoModelForCausalLM = None
+pipeline = None
+BitsAndBytesConfig = None
+
 # Try to import PyTorch and transformers, but don't fail if they're not available
 try:
     import torch
     TORCH_AVAILABLE = True
     try:
         from transformers import pipeline, AutoModelForSeq2SeqLM, AutoTokenizer, AutoModelForCausalLM
+        # Also import BitsAndBytesConfig for 8-bit quantization
+        try:
+            from transformers import BitsAndBytesConfig
+        except ImportError:
+            logger.warning("BitsAndBytesConfig not available. 8-bit quantization will be disabled.")
         TRANSFORMERS_AVAILABLE = True
     except ImportError:
         logger.warning("Transformers library not available. Embedded LLM functionality will be disabled.")
@@ -86,6 +98,9 @@ class EmbeddedTextProcessor:
             return
             
         try:
+            # Ensure global variables are available
+            global AutoTokenizer, AutoModelForSeq2SeqLM, AutoModelForCausalLM, BitsAndBytesConfig
+            
             # Check if model is already cached
             model_cache_dir = self._get_model_cache_path()
             model_id = self.model_name.split("/")[-1] if "/" in self.model_name else self.model_name
@@ -123,20 +138,30 @@ class EmbeddedTextProcessor:
                     if "CUDA" in str(e) or "cudnn" in str(e) or "GPU" in str(e):
                         logger.warning(f"Failed to load model with GPU acceleration: {e}")
                         logger.info("Trying to load model in CPU-only mode with reduced precision")
-                        # Try to load with CPU and 8-bit quantization
-                        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
                         
-                        quantization_config = BitsAndBytesConfig(
-                            load_in_8bit=True,
-                            llm_int8_enable_fp32_cpu_offload=True
-                        )
+                        # If BitsAndBytesConfig isn't already imported, try to import it now
+                        if BitsAndBytesConfig is None:
+                            try:
+                                from transformers import BitsAndBytesConfig
+                            except ImportError:
+                                logger.error("BitsAndBytesConfig not available, cannot load model in reduced precision mode")
+                                raise
                         
-                        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-                        self.model = AutoModelForCausalLM.from_pretrained(
-                            self.model_name,
-                            device_map="auto",
-                            quantization_config=quantization_config
-                        )
+                        # Create quantization config if BitsAndBytesConfig is available
+                        if BitsAndBytesConfig is not None:
+                            quantization_config = BitsAndBytesConfig(
+                                load_in_8bit=True,
+                                llm_int8_enable_fp32_cpu_offload=True
+                            )
+                            
+                            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+                            self.model = AutoModelForCausalLM.from_pretrained(
+                                self.model_name,
+                                device_map="auto",
+                                quantization_config=quantization_config
+                            )
+                        else:
+                            raise
                     else:
                         raise
             
@@ -202,16 +227,50 @@ class EmbeddedTextProcessor:
             # Set max_length based on input length (aim for ~30% compression)
             max_length = min(self.max_length, max(self.min_length, int(len(text.split()) * 0.3)))
             
-            # Process the text
-            result = self.model(
-                text, 
-                max_length=max_length,
-                min_length=self.min_length,
-                do_sample=False
-            )
+            # Check if model and tokenizer are loaded
+            if self.model is None or self.tokenizer is None:
+                logger.warning("Model not loaded yet, trying to load now")
+                self._load_model()
+                if self.model is None or self.tokenizer is None:
+                    logger.error("Failed to load model")
+                    return None
             
-            if result and len(result) > 0:
-                summary = result[0]["summary_text"]
+            # Process the text directly using model
+            global pipeline
+            summary = None
+            
+            # Try to use the pipeline first if it's available
+            if pipeline is not None:
+                try:
+                    summarizer = pipeline("summarization", model=self.model, tokenizer=self.tokenizer)
+                    result = summarizer(text, max_length=max_length, min_length=self.min_length, do_sample=False)
+                    if result and len(result) > 0:
+                        summary = result[0]["summary_text"]
+                except Exception as pipeline_error:
+                    logger.warning(f"Pipeline summarization failed: {pipeline_error}. Falling back to direct model usage.")
+            
+            # If pipeline failed or is not available, use direct model interaction
+            if summary is None:
+                # Process directly using model
+                inputs = self.tokenizer(text, return_tensors="pt", max_length=1024, truncation=True)
+                
+                # Move inputs to model device
+                device = next(self.model.parameters()).device
+                inputs = {k: v.to(device) for k, v in inputs.items()}
+                
+                # Generate summary
+                with torch.no_grad():
+                    summary_ids = self.model.generate(
+                        inputs["input_ids"],
+                        max_length=max_length,
+                        min_length=self.min_length,
+                        do_sample=False
+                    )
+                
+                summary = self.tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+            
+            # Create result
+            if summary:
                 return LLMProcessingResult(
                     original_text=text,
                     processed_text=summary,

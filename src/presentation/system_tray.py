@@ -16,6 +16,7 @@ class SystemTrayIcon(QSystemTrayIcon):
         # Settings for notifications (defaults)
         self.show_notifications = False
         self.mute_notifications = True
+        self.auto_paste = True  # Enable auto-paste by default
         
         # Create custom toast
         self.toast = CustomToast()
@@ -259,10 +260,15 @@ class SystemTrayIcon(QSystemTrayIcon):
     def update_settings(self, settings):
         """Update tray settings from application settings"""
         if hasattr(settings, 'appearance') and settings.appearance:
-            # Override settings to always disable notifications
-            self.show_notifications = False
-            self.mute_notifications = True
-            logger.debug("Notifications have been disabled")
+            # Update notification settings from application settings
+            self.show_notifications = settings.appearance.show_notifications
+            self.mute_notifications = settings.appearance.mute_notifications
+            # Update auto-paste setting if available
+            if hasattr(settings.appearance, 'auto_paste'):
+                self.auto_paste = settings.appearance.auto_paste
+            logger.debug(f"Settings updated: show_notifications={self.show_notifications}, "
+                        f"mute_notifications={self.mute_notifications}, "
+                        f"auto_paste={self.auto_paste}")
 
     def show_notification(self, title, message, icon=QSystemTrayIcon.MessageIcon.Information, duration=3000):
         """Show a notification if enabled in settings
@@ -306,7 +312,8 @@ class SystemTrayIcon(QSystemTrayIcon):
         self.animation_timer.start(500)
         
         # Show custom toast notification with recording icon - shorter duration (2.5 seconds)
-        self.toast.show_toast("Recording", "Started recording audio", 2500, "recording")
+        if self.show_notifications:
+            self.toast.show_toast("Recording", "Started recording audio", 2500, "recording")
 
     @Slot()
     def on_stop_hotkey_pressed(self):
@@ -316,12 +323,13 @@ class SystemTrayIcon(QSystemTrayIcon):
         """
         # Use an emoji icon to grab attention
         logger.debug("on_stop_hotkey_pressed called - showing toast notification for stopping recording")
-        self.toast.show_toast(
-            "Recording Stopped", 
-            "Processing...",
-            duration=3000,  # 3 seconds - shorter duration
-            icon_type="info"
-        )
+        if self.show_notifications:
+            self.toast.show_toast(
+                "Recording Stopped", 
+                "Processing...",
+                duration=3000,  # 3 seconds - shorter duration
+                icon_type="info"
+            )
         
         logger.debug("Toast notification shown for stopping recording")
 
@@ -334,6 +342,13 @@ class SystemTrayIcon(QSystemTrayIcon):
         # Set recording state
         self.is_recording = False
         self.is_processing = True
+        
+        # Continue the animation but now using processing frames
+        if not self.animation_timer.isActive():
+            self.animation_timer.start(500)
+        
+        # Set the processing icon explicitly to ensure visual indicator changes
+        self.setIcon(self.processing_icon)
 
     @Slot(str)
     def on_recording_failed(self, error_message: str):
@@ -394,6 +409,10 @@ class SystemTrayIcon(QSystemTrayIcon):
         # Copy to clipboard automatically without showing notification
         self.copy_to_clipboard()
         
+        # Auto-paste into current active window if enabled
+        if self.auto_paste:
+            self._auto_paste_to_active_window()
+        
         # Schedule the toast notification with a slight delay to avoid overlap
         logger.debug("Scheduling transcription complete toast with 1.5s delay")
         QTimer.singleShot(1500, self._show_transcription_complete_toast)
@@ -401,12 +420,13 @@ class SystemTrayIcon(QSystemTrayIcon):
     def _show_transcription_complete_toast(self):
         """Show a toast notification indicating transcription is complete"""
         logger.debug("Showing transcription complete toast")
-        self.toast.show_toast(
-            "Transcription Complete", 
-            "✓ Copied to clipboard",
-            duration=2500,  # 2.5 seconds - shorter duration
-            icon_type="success"
-        )
+        if self.show_notifications:
+            self.toast.show_toast(
+                "Transcription Complete", 
+                "✓ Copied to clipboard",
+                duration=2500,  # 2.5 seconds - shorter duration
+                icon_type="success"
+            )
         logger.debug("Transcription complete toast shown")
 
     def _flash_success_icon(self):
@@ -478,9 +498,10 @@ class SystemTrayIcon(QSystemTrayIcon):
         self.copy_llm_to_clipboard()
         
         # Show toast with preview of processed text and success icon - extended duration
-        toast_preview = result.processed_text[:35] + "..." if len(result.processed_text) > 35 else result.processed_text
-        process_type = result.processing_type.replace("_", " ").title()  # Format the processing type for display
-        self.toast.show_toast(f"{process_type} Complete", toast_preview, 4000, "success")
+        if self.show_notifications:
+            toast_preview = result.processed_text[:35] + "..." if len(result.processed_text) > 35 else result.processed_text
+            process_type = result.processing_type.replace("_", " ").title()  # Format the processing type for display
+            self.toast.show_toast(f"{process_type} Complete", toast_preview, 4000, "success")
         
         # Flash icon to indicate completion
         self._flash_success_icon()
@@ -513,7 +534,42 @@ class SystemTrayIcon(QSystemTrayIcon):
         QApplication.quit()
 
     def _create_default_icon(self) -> QIcon:
-        """Create a modern microphone icon if the file is not found"""
+        """Create a default icon based on available image files or generate one if not found"""
+        # Try to load from files first
+        icon = QIcon()
+        base_dir = Path(__file__).parent.parent.parent
+        resources_dir = base_dir / "resources" / "images"
+        
+        # Try to load all sizes of microphone.png
+        sizes = [16, 32, 64, 128]
+        found_any_file = False
+        
+        for size in sizes:
+            # Try size-specific files first
+            size_file = resources_dir / f"microphone_{size}.png"
+            if size_file.exists():
+                icon.addFile(str(size_file), QSize(size, size))
+                found_any_file = True
+                logger.debug(f"Loaded icon file: {size_file}")
+        
+        # If we couldn't find any size-specific files, try the base microphone.png
+        if not found_any_file:
+            base_file = resources_dir / "microphone.png"
+            if base_file.exists():
+                icon.addFile(str(base_file))
+                found_any_file = True
+                logger.debug(f"Loaded base icon file: {base_file}")
+        
+        # If we found and loaded any icon files, return the icon
+        if found_any_file and not icon.isNull():
+            return icon
+            
+        # If we couldn't load any files, generate an icon as fallback
+        logger.warning("No microphone icon files found, using generated icon")
+        return self._generate_default_icon()
+        
+    def _generate_default_icon(self) -> QIcon:
+        """Generate a default microphone icon if no image files are found"""
         sizes = [16, 24, 32, 48, 64, 128]
         icon = QIcon()
         
@@ -561,120 +617,122 @@ class SystemTrayIcon(QSystemTrayIcon):
         return icon
     
     def _create_recording_icon(self) -> QIcon:
-        """Create a modern recording icon with red indicator"""
+        """Create a recording icon with red dot in top right corner using the original logo"""
         sizes = [16, 24, 32, 48, 64, 128]
         icon = QIcon()
         
+        # Use original microphone icon as the base
+        original_icon = self._default_icon
+        
         for size in sizes:
-            pixmap = QPixmap(size, size)
-            pixmap.fill(Qt.transparent)
+            # Start with the original icon pixmap
+            pixmap = original_icon.pixmap(size, size)
             
-            painter = QPainter(pixmap)
-            painter.setRenderHint(QPainter.Antialiasing)
-            
-            # Draw a blue circle
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(0, 102, 204))  # #0066cc - Primary blue
-            painter.drawEllipse(2, 2, size-4, size-4)
-            
-            # Calculate microphone dimensions
-            mic_width = size // 3
-            mic_height = size // 2
-            mic_x = (size - mic_width) // 2
-            mic_y = size // 5
-            
-            # Draw a microphone body (white rounded rectangle)
-            painter.setBrush(QColor(255, 255, 255))  # White
-            painter.drawRoundedRect(mic_x, mic_y, mic_width, mic_height, mic_width//3, mic_width//3)
-            
-            # Draw a microphone stand
-            stand_width = size // 10
-            stand_height = size // 4
-            stand_x = size // 2 - stand_width // 2
-            stand_y = mic_y + mic_height
-            
-            painter.drawRect(stand_x, stand_y, stand_width, stand_height)
-            
-            # Draw a stand base
-            base_width = size // 2
-            base_height = size // 16
-            base_x = size // 2 - base_width // 2
-            base_y = stand_y + stand_height
-            
-            painter.drawRoundedRect(base_x, base_y, base_width, base_height, base_height//2, base_height//2)
-            
-            # Draw a red recording indicator
-            indicator_size = max(size // 4, 4)  # Ensure it's at least 4px
-            indicator_x = size - indicator_size - 2
-            indicator_y = 2
-            
-            painter.setBrush(QColor(255, 59, 48))  # #ff3b30 - iOS-style red
-            painter.drawEllipse(indicator_x, indicator_y, indicator_size, indicator_size)
-            
-            painter.end()
-            icon.addPixmap(pixmap)
-            
-        return icon
-
-    def _create_recording_animation_frames(self):
-        """Create animation frames for recording indicator"""
-        self.recording_frames = []
-        
-        # Create 4 frames with different opacity levels for pulsing effect
-        opacity_levels = [1.0, 0.8, 0.6, 0.8]  # Pulse effect
-        sizes = [16, 24, 32, 48, 64, 128]
-        
-        for opacity in opacity_levels:
-            icon = QIcon()
-            
-            for size in sizes:
+            # If the pixmap is valid (not null or empty), use it as the base
+            if not pixmap.isNull() and pixmap.width() > 0:
+                painter = QPainter(pixmap)
+                painter.setRenderHint(QPainter.Antialiasing)
+                
+                # Draw a red recording indicator dot in the top right corner
+                indicator_size = max(size // 5, 4)  # Ensure it's at least 4px
+                indicator_x = size - indicator_size - 1
+                indicator_y = 1
+                
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QColor(255, 0, 0))  # Bright red
+                painter.drawEllipse(indicator_x, indicator_y, indicator_size, indicator_size)
+                
+                painter.end()
+            else:
+                # If the original icon pixmap is invalid, create a new one with the generated icon
                 pixmap = QPixmap(size, size)
                 pixmap.fill(Qt.transparent)
                 
                 painter = QPainter(pixmap)
                 painter.setRenderHint(QPainter.Antialiasing)
                 
-                # Draw a blue circle
+                # Draw the base icon (blue circle with microphone)
+                temp_icon = self._generate_default_icon()
+                temp_pixmap = temp_icon.pixmap(size, size)
+                painter.drawPixmap(0, 0, temp_pixmap)
+                
+                # Draw a red recording indicator
+                indicator_size = max(size // 5, 4)  # Ensure it's at least 4px
+                indicator_x = size - indicator_size - 1
+                indicator_y = 1
+                
                 painter.setPen(Qt.NoPen)
-                painter.setBrush(QColor(0, 102, 204))  # #0066cc - Primary blue
-                painter.drawEllipse(2, 2, size-4, size-4)
-                
-                # Calculate microphone dimensions
-                mic_width = size // 3
-                mic_height = size // 2
-                mic_x = (size - mic_width) // 2
-                mic_y = size // 5
-                
-                # Draw a microphone body (white rounded rectangle)
-                painter.setBrush(QColor(255, 255, 255))  # White
-                painter.drawRoundedRect(mic_x, mic_y, mic_width, mic_height, mic_width//3, mic_width//3)
-                
-                # Draw a microphone stand
-                stand_width = size // 10
-                stand_height = size // 4
-                stand_x = size // 2 - stand_width // 2
-                stand_y = mic_y + mic_height
-                
-                painter.drawRect(stand_x, stand_y, stand_width, stand_height)
-                
-                # Draw a stand base
-                base_width = size // 2
-                base_height = size // 16
-                base_x = size // 2 - base_width // 2
-                base_y = stand_y + stand_height
-                
-                painter.drawRoundedRect(base_x, base_y, base_width, base_height, base_height//2, base_height//2)
-                
-                # Draw a red recording indicator with varying opacity
-                indicator_size = max(size // 4, 4)  # Ensure it's at least 4px
-                indicator_x = size - indicator_size - 2
-                indicator_y = 2
-                
-                recording_color = QColor(255, 59, 48, int(255 * opacity))  # #ff3b30 with variable opacity
-                painter.setBrush(recording_color)
+                painter.setBrush(QColor(255, 0, 0))  # Bright red
                 painter.drawEllipse(indicator_x, indicator_y, indicator_size, indicator_size)
                 
                 painter.end()
+            
+            icon.addPixmap(pixmap)
+        
+        return icon
+
+    def _create_recording_animation_frames(self):
+        """Create animation frames for recording with flashing red dot"""
+        self.recording_frames = []
+        
+        # Create frames with different opacity levels for flashing red dot
+        opacity_levels = [1.0, 0.6, 0.3, 0.6, 1.0]
+        
+        sizes = [16, 24, 32, 48, 64, 128]
+        
+        # Use original icon as base
+        original_icon = self._default_icon
+        
+        for opacity in opacity_levels:
+            icon = QIcon()
+            
+            for size in sizes:
+                # Start with the original icon pixmap
+                pixmap = original_icon.pixmap(size, size)
+                
+                # If the pixmap is valid, use it as the base
+                if not pixmap.isNull() and pixmap.width() > 0:
+                    painter = QPainter(pixmap)
+                    painter.setRenderHint(QPainter.Antialiasing)
+                    
+                    # Draw a red recording indicator with variable opacity for flashing
+                    indicator_size = max(size // 5, 4)  # Ensure it's at least 4px
+                    indicator_x = size - indicator_size - 1
+                    indicator_y = 1
+                    
+                    # Use variable opacity for flashing effect
+                    recording_color = QColor(255, 0, 0, int(255 * opacity))
+                    painter.setPen(Qt.NoPen)
+                    painter.setBrush(recording_color)
+                    painter.drawEllipse(indicator_x, indicator_y, indicator_size, indicator_size)
+                    
+                    painter.end()
+                else:
+                    # If the original icon pixmap is invalid, create a new one with the generated icon
+                    pixmap = QPixmap(size, size)
+                    pixmap.fill(Qt.transparent)
+                    
+                    painter = QPainter(pixmap)
+                    painter.setRenderHint(QPainter.Antialiasing)
+                    
+                    # Draw the base icon
+                    temp_icon = self._generate_default_icon()
+                    temp_pixmap = temp_icon.pixmap(size, size)
+                    painter.drawPixmap(0, 0, temp_pixmap)
+                    
+                    # Draw a red recording indicator with variable opacity for flashing
+                    indicator_size = max(size // 5, 4)  # Ensure it's at least 4px
+                    indicator_x = size - indicator_size - 1
+                    indicator_y = 1
+                    
+                    # Use variable opacity for flashing effect
+                    recording_color = QColor(255, 0, 0, int(255 * opacity))
+                    painter.setPen(Qt.NoPen)
+                    painter.setBrush(recording_color)
+                    painter.drawEllipse(indicator_x, indicator_y, indicator_size, indicator_size)
+                    
+                    painter.end()
+                
                 icon.addPixmap(pixmap)
                 
             self.recording_frames.append(icon)
@@ -697,127 +755,122 @@ class SystemTrayIcon(QSystemTrayIcon):
         self._animate_icon()
 
     def _create_processing_icon(self) -> QIcon:
-        """Create a processing icon with gear/cog indicator"""
+        """Create a processing icon with light red dot in top right corner using the original logo"""
         sizes = [16, 24, 32, 48, 64, 128]
         icon = QIcon()
         
+        # Use original microphone icon as the base
+        original_icon = self._default_icon
+        
         for size in sizes:
-            pixmap = QPixmap(size, size)
-            pixmap.fill(Qt.transparent)
+            # Start with the original icon pixmap
+            pixmap = original_icon.pixmap(size, size)
             
-            painter = QPainter(pixmap)
-            painter.setRenderHint(QPainter.Antialiasing)
-            
-            # Draw a blue circle
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(0, 102, 204))  # #0066cc - Primary blue
-            painter.drawEllipse(2, 2, size-4, size-4)
-            
-            # Calculate microphone dimensions
-            mic_width = size // 3
-            mic_height = size // 2
-            mic_x = (size - mic_width) // 2
-            mic_y = size // 5
-            
-            # Draw a microphone body (white rounded rectangle)
-            painter.setBrush(QColor(255, 255, 255))  # White
-            painter.drawRoundedRect(mic_x, mic_y, mic_width, mic_height, mic_width//3, mic_width//3)
-            
-            # Draw a microphone stand
-            stand_width = size // 10
-            stand_height = size // 4
-            stand_x = size // 2 - stand_width // 2
-            stand_y = mic_y + mic_height
-            
-            painter.drawRect(stand_x, stand_y, stand_width, stand_height)
-            
-            # Draw a stand base
-            base_width = size // 2
-            base_height = size // 16
-            base_x = size // 2 - base_width // 2
-            base_y = stand_y + stand_height
-            
-            painter.drawRoundedRect(base_x, base_y, base_width, base_height, base_height//2, base_height//2)
-            
-            # Draw a processing indicator (yellow dot)
-            indicator_size = max(size // 4, 4)  # Ensure it's at least 4px
-            indicator_x = size - indicator_size - 2
-            indicator_y = 2
-            
-            painter.setBrush(QColor(255, 204, 0))  # Yellow
-            painter.drawEllipse(indicator_x, indicator_y, indicator_size, indicator_size)
-            
-            painter.end()
-            icon.addPixmap(pixmap)
-            
-        return icon
-
-    def _create_processing_animation_frames(self):
-        """Create animation frames for processing indicator"""
-        self.processing_frames = []
-        
-        # Create frames with different colors for processing animation (blue → yellow → orange)
-        processing_colors = [
-            QColor(255, 204, 0),    # Yellow
-            QColor(255, 170, 0),    # Yellow-orange
-            QColor(255, 136, 0),    # Orange
-            QColor(255, 102, 0),    # Deep orange
-            QColor(255, 136, 0),    # Orange (reverse)
-            QColor(255, 170, 0),    # Yellow-orange (reverse)
-        ]
-        
-        sizes = [16, 24, 32, 48, 64, 128]
-        
-        for color in processing_colors:
-            icon = QIcon()
-            
-            for size in sizes:
+            # If the pixmap is valid (not null or empty), use it as the base
+            if not pixmap.isNull() and pixmap.width() > 0:
+                painter = QPainter(pixmap)
+                painter.setRenderHint(QPainter.Antialiasing)
+                
+                # Draw a lighter red processing indicator in the top right corner
+                indicator_size = max(size // 5, 4)  # Ensure it's at least 4px
+                indicator_x = size - indicator_size - 1
+                indicator_y = 1
+                
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QColor(255, 128, 128))  # Lighter red
+                painter.drawEllipse(indicator_x, indicator_y, indicator_size, indicator_size)
+                
+                painter.end()
+            else:
+                # If the original icon pixmap is invalid, create a new one with the generated icon
                 pixmap = QPixmap(size, size)
                 pixmap.fill(Qt.transparent)
                 
                 painter = QPainter(pixmap)
                 painter.setRenderHint(QPainter.Antialiasing)
                 
-                # Draw a blue circle
+                # Draw the base icon (blue circle with microphone)
+                temp_icon = self._generate_default_icon()
+                temp_pixmap = temp_icon.pixmap(size, size)
+                painter.drawPixmap(0, 0, temp_pixmap)
+                
+                # Draw a lighter red processing indicator
+                indicator_size = max(size // 5, 4)  # Ensure it's at least 4px
+                indicator_x = size - indicator_size - 1
+                indicator_y = 1
+                
                 painter.setPen(Qt.NoPen)
-                painter.setBrush(QColor(0, 102, 204))  # #0066cc - Primary blue
-                painter.drawEllipse(2, 2, size-4, size-4)
-                
-                # Calculate microphone dimensions
-                mic_width = size // 3
-                mic_height = size // 2
-                mic_x = (size - mic_width) // 2
-                mic_y = size // 5
-                
-                # Draw a microphone body (white rounded rectangle)
-                painter.setBrush(QColor(255, 255, 255))  # White
-                painter.drawRoundedRect(mic_x, mic_y, mic_width, mic_height, mic_width//3, mic_width//3)
-                
-                # Draw a microphone stand
-                stand_width = size // 10
-                stand_height = size // 4
-                stand_x = size // 2 - stand_width // 2
-                stand_y = mic_y + mic_height
-                
-                painter.drawRect(stand_x, stand_y, stand_width, stand_height)
-                
-                # Draw a stand base
-                base_width = size // 2
-                base_height = size // 16
-                base_x = size // 2 - base_width // 2
-                base_y = stand_y + stand_height
-                
-                painter.drawRoundedRect(base_x, base_y, base_width, base_height, base_height//2, base_height//2)
-                
-                # Draw a processing indicator with current color
-                indicator_size = max(size // 4, 4)  # Ensure it's at least 4px
-                indicator_x = size - indicator_size - 2
-                indicator_y = 2
-                
-                painter.setBrush(color)
+                painter.setBrush(QColor(255, 128, 128))  # Lighter red
                 painter.drawEllipse(indicator_x, indicator_y, indicator_size, indicator_size)
                 
                 painter.end()
+            
+            icon.addPixmap(pixmap)
+        
+        return icon
+
+    def _create_processing_animation_frames(self):
+        """Create animation frames for processing indicator with light red dot"""
+        self.processing_frames = []
+        
+        # Create frames with different opacity levels for subtle pulsing of lighter red dot
+        opacity_levels = [1.0, 0.9, 0.8, 0.7, 0.8, 0.9]
+        
+        sizes = [16, 24, 32, 48, 64, 128]
+        
+        # Use original icon as base
+        original_icon = self._default_icon
+        
+        for opacity in opacity_levels:
+            icon = QIcon()
+            
+            for size in sizes:
+                # Start with the original icon pixmap
+                pixmap = original_icon.pixmap(size, size)
+                
+                # If the pixmap is valid, use it as the base
+                if not pixmap.isNull() and pixmap.width() > 0:
+                    painter = QPainter(pixmap)
+                    painter.setRenderHint(QPainter.Antialiasing)
+                    
+                    # Draw a lighter red processing indicator with subtle pulsing
+                    indicator_size = max(size // 5, 4)  # Ensure it's at least 4px
+                    indicator_x = size - indicator_size - 1
+                    indicator_y = 1
+                    
+                    # Use lighter red with variable opacity for subtle pulsing
+                    processing_color = QColor(255, 128, 128, int(255 * opacity))
+                    painter.setPen(Qt.NoPen)
+                    painter.setBrush(processing_color)
+                    painter.drawEllipse(indicator_x, indicator_y, indicator_size, indicator_size)
+                    
+                    painter.end()
+                else:
+                    # If the original icon pixmap is invalid, create a new one with the generated icon
+                    pixmap = QPixmap(size, size)
+                    pixmap.fill(Qt.transparent)
+                    
+                    painter = QPainter(pixmap)
+                    painter.setRenderHint(QPainter.Antialiasing)
+                    
+                    # Draw the base icon
+                    temp_icon = self._generate_default_icon()
+                    temp_pixmap = temp_icon.pixmap(size, size)
+                    painter.drawPixmap(0, 0, temp_pixmap)
+                    
+                    # Draw a lighter red processing indicator with subtle pulsing
+                    indicator_size = max(size // 5, 4)  # Ensure it's at least 4px
+                    indicator_x = size - indicator_size - 1
+                    indicator_y = 1
+                    
+                    # Use lighter red with variable opacity for subtle pulsing
+                    processing_color = QColor(255, 128, 128, int(255 * opacity))
+                    painter.setPen(Qt.NoPen)
+                    painter.setBrush(processing_color)
+                    painter.drawEllipse(indicator_x, indicator_y, indicator_size, indicator_size)
+                    
+                    painter.end()
+                
                 icon.addPixmap(pixmap)
                 
             self.processing_frames.append(icon)
@@ -833,4 +886,113 @@ class SystemTrayIcon(QSystemTrayIcon):
         else:
             self.recent_transcription_action.setText("No recent transcriptions")
             self.recent_transcription_action.setEnabled(False)
-            self.copy_action.setEnabled(False) 
+            self.copy_action.setEnabled(False)
+
+    def _auto_paste_to_active_window(self):
+        """Automatically paste the clipboard content into the currently active window"""
+        try:
+            logger.debug("Attempting to auto-paste to active window")
+            
+            # Import platform-specific modules
+            import platform
+            if platform.system() == 'Windows':
+                import ctypes
+                from ctypes import wintypes
+                import time
+                
+                # Give a small delay for UI to stabilize
+                time.sleep(0.5)
+                
+                # Simulate Ctrl+V keystroke
+                # Virtual Key Codes
+                VK_CONTROL = 0x11
+                VK_V = 0x56
+                
+                # Input types
+                INPUT_KEYBOARD = 1
+                
+                # Key event types
+                KEYEVENTF_KEYDOWN = 0x0000
+                KEYEVENTF_KEYUP = 0x0002
+                
+                # Define structures for input simulation
+                class MOUSEINPUT(ctypes.Structure):
+                    _fields_ = [
+                        ("dx", wintypes.LONG),
+                        ("dy", wintypes.LONG),
+                        ("mouseData", wintypes.DWORD),
+                        ("dwFlags", wintypes.DWORD),
+                        ("time", wintypes.DWORD),
+                        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))
+                    ]
+                
+                class KEYBDINPUT(ctypes.Structure):
+                    _fields_ = [
+                        ("wVk", wintypes.WORD),
+                        ("wScan", wintypes.WORD),
+                        ("dwFlags", wintypes.DWORD),
+                        ("time", wintypes.DWORD),
+                        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))
+                    ]
+                
+                class HARDWAREINPUT(ctypes.Structure):
+                    _fields_ = [
+                        ("uMsg", wintypes.DWORD),
+                        ("wParamL", wintypes.WORD),
+                        ("wParamH", wintypes.WORD)
+                    ]
+                
+                class INPUT_union(ctypes.Union):
+                    _fields_ = [
+                        ("mi", MOUSEINPUT),
+                        ("ki", KEYBDINPUT),
+                        ("hi", HARDWAREINPUT)
+                    ]
+                
+                class INPUT(ctypes.Structure):
+                    _fields_ = [
+                        ("type", wintypes.DWORD),
+                        ("union", INPUT_union)
+                    ]
+                
+                # Prepare keystroke events:
+                # Press Ctrl, Press V, Release V, Release Ctrl
+                inputs = (INPUT * 4)()
+                
+                # Press Ctrl
+                inputs[0].type = INPUT_KEYBOARD
+                inputs[0].union.ki.wVk = VK_CONTROL
+                inputs[0].union.ki.dwFlags = KEYEVENTF_KEYDOWN
+                
+                # Press V
+                inputs[1].type = INPUT_KEYBOARD
+                inputs[1].union.ki.wVk = VK_V
+                inputs[1].union.ki.dwFlags = KEYEVENTF_KEYDOWN
+                
+                # Release V
+                inputs[2].type = INPUT_KEYBOARD
+                inputs[2].union.ki.wVk = VK_V
+                inputs[2].union.ki.dwFlags = KEYEVENTF_KEYUP
+                
+                # Release Ctrl
+                inputs[3].type = INPUT_KEYBOARD
+                inputs[3].union.ki.wVk = VK_CONTROL
+                inputs[3].union.ki.dwFlags = KEYEVENTF_KEYUP
+                
+                # Send keystrokes
+                nInputs = len(inputs)
+                cbSize = ctypes.c_int(ctypes.sizeof(INPUT))
+                ctypes.windll.user32.SendInput(nInputs, ctypes.pointer(inputs), cbSize)
+                
+                logger.debug("Auto-paste keystrokes sent")
+                
+            elif platform.system() == 'Darwin':  # macOS
+                # Future implementation
+                logger.warning("Auto-paste for macOS not implemented yet")
+                
+            elif platform.system() == 'Linux':
+                # Future implementation
+                logger.warning("Auto-paste for Linux not implemented yet")
+                
+        except Exception as e:
+            logger.error(f"Error in auto-paste: {e}", exc_info=True) 

@@ -18,6 +18,14 @@ from ..theme import AppTheme
 
 logger = logging.getLogger(__name__)
 
+# Define constants if not in AppTheme
+if not hasattr(AppTheme, 'TEXT_SECONDARY'):
+    setattr(AppTheme, 'TEXT_SECONDARY', '#777777')
+if not hasattr(AppTheme, 'FONT_SIZE_SMALL'):
+    setattr(AppTheme, 'FONT_SIZE_SMALL', 8)
+if not hasattr(AppTheme, 'ACCENT'):
+    setattr(AppTheme, 'ACCENT', '#0078D7')
+
 class SettingsWindow(QMainWindow):
     # Add a signal to indicate settings were saved
     settings_saved = Signal()
@@ -553,6 +561,11 @@ class SettingsWindow(QMainWindow):
         self.clipboard_check.toggled.connect(self._mark_settings_changed)
         notif_layout.addRow("", self.clipboard_check)
         
+        self.auto_paste_check = QCheckBox("Auto-paste transcription into active text field")
+        self.auto_paste_check.setChecked(self.settings.appearance.auto_paste if hasattr(self.settings, 'appearance') else True)
+        self.auto_paste_check.toggled.connect(self._mark_settings_changed)
+        notif_layout.addRow("", self.auto_paste_check)
+        
         layout.addWidget(notif_group)
         
         # Theme settings (for future implementation)
@@ -770,6 +783,7 @@ class SettingsWindow(QMainWindow):
         self.settings.appearance.show_notifications = self.show_notif_check.isChecked()
         self.settings.appearance.mute_notifications = self.mute_notif_check.isChecked()
         self.settings.appearance.auto_copy_to_clipboard = self.clipboard_check.isChecked()
+        self.settings.appearance.auto_paste = self.auto_paste_check.isChecked()
         self.settings.appearance.theme = self.theme_combo.currentText()
         
         # Save settings
@@ -892,10 +906,10 @@ class SettingsWindow(QMainWindow):
 class SettingsDialog(QDialog):
     hotkey_changed = Signal(object)  # Emits QKeySequence
 
-    def __init__(self, parent=None, settings=None, settings_repository=None):
+    def __init__(self, parent=None, settings=None, recording_service=None):
         super().__init__(parent)
         self.settings = settings
-        self.settings_repository = settings_repository
+        self.recording_service = recording_service
         self.setWindowTitle("Memo Settings")
         self.setMinimumWidth(400)
         
@@ -940,10 +954,26 @@ class SettingsDialog(QDialog):
         hotkey_label = QLabel("Recording Hotkey:")
         self.hotkey_edit = QKeySequenceEdit()
         self.hotkey_edit.setMinimumWidth(200)
+        
+        # Set the current hotkey from settings
+        if self.settings and hasattr(self.settings, 'hotkeys') and self.settings.hotkeys.record_key:
+            self.hotkey_edit.setKeySequence(self.settings.hotkeys.record_key)
+            
         hotkey_layout.addRow(hotkey_label, self.hotkey_edit)
         
+        # Add a section for quit hotkey
+        quit_hotkey_label = QLabel("Quit Hotkey:")
+        self.quit_hotkey_edit = QKeySequenceEdit()
+        self.quit_hotkey_edit.setMinimumWidth(200)
+        
+        # Set the current quit hotkey from settings
+        if self.settings and hasattr(self.settings, 'hotkeys') and self.settings.hotkeys.quit_key:
+            self.quit_hotkey_edit.setKeySequence(self.settings.hotkeys.quit_key)
+            
+        hotkey_layout.addRow(quit_hotkey_label, self.quit_hotkey_edit)
+        
         # Add a note
-        note_label = QLabel("Note: The hotkey works globally across all applications")
+        note_label = QLabel("Note: These hotkeys work globally across all applications")
         note_label.setStyleSheet(f"color: {AppTheme.TEXT_SECONDARY}; font-size: {AppTheme.FONT_SIZE_SMALL}pt;")
         hotkey_layout.addRow("", note_label)
         
@@ -993,10 +1023,26 @@ class SettingsDialog(QDialog):
             QApplication.quit()
     
     def accept(self):
-        """Override accept to emit hotkey_changed signal when OK is clicked"""
-        new_sequence = self.hotkey_edit.keySequence()
-        self.hotkey_changed.emit(new_sequence)
-        logger.debug(f"Hotkey changed to: {new_sequence.toString()}")
+        """Override accept to save the hotkey settings when OK is clicked"""
+        if self.settings and hasattr(self.settings, 'hotkeys'):
+            # Save record hotkey
+            new_record_sequence = self.hotkey_edit.keySequence()
+            if new_record_sequence != self.settings.hotkeys.record_key:
+                self.settings.hotkeys.record_key = new_record_sequence
+                if self.recording_service:
+                    self.recording_service.set_hotkey(new_record_sequence)
+                    
+            # Save quit hotkey
+            new_quit_sequence = self.quit_hotkey_edit.keySequence()
+            if new_quit_sequence != self.settings.hotkeys.quit_key:
+                self.settings.hotkeys.quit_key = new_quit_sequence
+                if self.recording_service:
+                    self.recording_service.set_quit_hotkey(new_quit_sequence)
+                    
+            # Emit the signal for compatibility
+            self.hotkey_changed.emit(new_record_sequence)
+            logger.debug(f"Hotkeys saved: Record={new_record_sequence.toString()}, Quit={new_quit_sequence.toString()}")
+            
         super().accept()
         
     def _on_hotkey_changed(self):
@@ -1005,4 +1051,12 @@ class SettingsDialog(QDialog):
 
     def set_current_hotkey(self, key_sequence):
         """Set the current hotkey in the editor"""
-        self.hotkey_edit.setKeySequence(key_sequence) 
+        self.hotkey_edit.setKeySequence(key_sequence)
+        
+    def get_settings(self):
+        """Get the current settings
+        
+        Returns:
+            Settings: The updated settings object
+        """
+        return self.settings 

@@ -1,15 +1,32 @@
 from typing import Optional, Callable
 from pathlib import Path
 import logging
+from datetime import datetime
+from uuid import uuid4
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QKeySequence
 
-from ..domain.settings import Settings
-from ..infrastructure.audio.recorder import AudioRecorder
-from ..infrastructure.hotkeys.base import HotkeyHandler
-from ..infrastructure.transcription.transcriber import Transcriber
-from ..infrastructure.llm.processor import TextProcessor, LLMProcessingResult
-from ..infrastructure.llm.embedded_processor import EmbeddedTextProcessor, TORCH_AVAILABLE, TRANSFORMERS_AVAILABLE
+# Domain imports
+from ...domain.settings import Settings
+from ...domain.entities.recording import Recording
+from ...domain.entities.transcription import Transcription
+from ...domain.value_objects.audio_metadata import AudioMetadata
+from ...domain.value_objects.transcription_metadata import TranscriptionMetadata
+from ...domain.events.recording_events import RecordingStopped, RecordingFailed
+from ...domain.events.processing_events import (
+    TranscriptionStarted, 
+    TranscriptionCompleted, 
+    TranscriptionFailed,
+    LLMProcessingStarted,
+    ProcessingType
+)
+
+# Infrastructure imports
+from ..audio.recorder import AudioRecorder
+from ..hotkeys.base import HotkeyHandler
+from ..transcription.transcriber import Transcriber
+from ..llm.processor import TextProcessor, LLMProcessingResult
+from ..llm.embedded_processor import EmbeddedTextProcessor, TORCH_AVAILABLE, TRANSFORMERS_AVAILABLE
 
 logger = logging.getLogger(__name__)
 
@@ -110,11 +127,33 @@ class RecordingService(QObject):
     
     def _register_hotkeys(self):
         """Register the hotkeys from settings"""
+        # Register record hotkey
         self.hotkey_handler.register_hotkey(self.settings.hotkeys.record_key)
+        
+        # Register pause key if configured
         if self.settings.hotkeys.pause_key:
             self.hotkey_handler.register_hotkey(self.settings.hotkeys.pause_key)
+        
+        # Register process text key if configured
+        # Avoid registering as both a regular hotkey and a process text hotkey
         if self.settings.hotkeys.process_text_key:
+            # First check if this key is already registered as a regular hotkey
+            if self.settings.hotkeys.process_text_key in self.hotkey_handler.registered_hotkeys:
+                logger.warning(f"Process text key {self.settings.hotkeys.process_text_key.toString()} "
+                               f"is already registered as a regular hotkey. Unregistering first.")
+                self.hotkey_handler.unregister_hotkey(self.settings.hotkeys.process_text_key)
+                
+            # Now register it as a process text hotkey
             self.hotkey_handler.register_process_text_hotkey(self.settings.hotkeys.process_text_key)
+            
+        # Register the exit hotkey (Ctrl+Shift+Q)
+        exit_hotkey = QKeySequence("Ctrl+Shift+Q")
+        if exit_hotkey not in self.hotkey_handler.registered_hotkeys:
+            success = self.hotkey_handler.register_hotkey(exit_hotkey)
+            if success:
+                logger.info("Successfully registered exit hotkey (Ctrl+Shift+Q)")
+            else:
+                logger.warning("Failed to register exit hotkey (Ctrl+Shift+Q)")
     
     def set_hotkey(self, key_sequence: QKeySequence) -> bool:
         """Set a new hotkey for recording
@@ -230,12 +269,62 @@ class RecordingService(QObject):
             if recording_path is None:
                 logger.warning("No audio recorded or save failed")
                 self.recording_failed.emit("No audio recorded")
+                # Create and emit a domain event
+                recording_failed_event = RecordingFailed(
+                    error_message="No audio recorded or save failed"
+                )
+                logger.debug(f"Created domain event: {recording_failed_event}")
                 return None
                 
+            # Emit UI signal
             self.recording_stopped.emit(recording_path)
+            
+            # Create and use domain entity and events
+            # Get duration and other metadata
+            duration_seconds = self.audio_recorder.get_last_recording_duration()
+            audio_info = self.audio_recorder.get_last_recording_info()
+            
+            # Create AudioMetadata value object
+            audio_metadata = AudioMetadata(
+                sample_rate=self.audio_recorder.sample_rate,
+                channels=self.audio_recorder.channels,
+                bit_depth=16,  # Typically 16-bit for WAV
+                format="WAV",
+                device_name=str(self.audio_recorder.device),
+                file_size_bytes=recording_path.stat().st_size if recording_path.exists() else 0
+            )
+            
+            # Create Recording entity
+            recording_id = uuid4()
+            recording = Recording(
+                id=recording_id,
+                file_path=recording_path,
+                created_at=datetime.now(),
+                duration_seconds=duration_seconds,
+                metadata=audio_metadata
+            )
+            
+            # Create and log domain event
+            recording_stopped_event = RecordingStopped(
+                recording_id=recording_id,
+                file_path=recording_path,
+                duration_seconds=duration_seconds
+            )
+            logger.debug(f"Created domain event: {recording_stopped_event}")
+            
+            # Store recording entity for later reference
+            self.last_recording = recording
             
             # Transcribe the recording
             logger.info(f"Transcribing recording from {recording_path}")
+            
+            # Create and log domain event
+            transcription_started_event = TranscriptionStarted(
+                recording_id=recording_id
+            )
+            logger.debug(f"Created domain event: {transcription_started_event}")
+            
+            # Actual transcription
             result = self.transcriber.transcribe(
                 recording_path,
                 language=self.settings.transcription.language
@@ -249,17 +338,60 @@ class RecordingService(QObject):
                     # Assume result is already a string
                     transcribed_text = result
                 
+                # Create transcription entity
+                processing_time_ms = self.transcriber.get_last_processing_time() if hasattr(self.transcriber, 'get_last_processing_time') else 0
+                
+                # Create TranscriptionMetadata value object
+                transcription_metadata = TranscriptionMetadata(
+                    model_name=self.settings.transcription.model,
+                    language=self.settings.transcription.language,
+                    confidence_score=0.9,  # Placeholder
+                    processing_time_ms=processing_time_ms,
+                    device=self.settings.transcription.device,
+                    word_timestamps=False,
+                    model_version=self.transcriber.model_version if hasattr(self.transcriber, 'model_version') else None
+                )
+                
+                # Create Transcription entity
+                transcription_id = uuid4()
+                transcription = Transcription(
+                    id=transcription_id,
+                    recording_id=recording_id,
+                    text=transcribed_text,
+                    created_at=datetime.now(),
+                    metadata=transcription_metadata
+                )
+                
+                # Store for later reference
                 self.last_transcription = transcribed_text
+                self.last_transcription_entity = transcription
+                
+                # Update recording with transcription reference
+                recording.transcription_id = transcription_id
+                
+                # Create and log domain event
+                transcription_completed_event = TranscriptionCompleted(
+                    recording_id=recording_id,
+                    transcription_id=transcription_id,
+                    text_length=len(transcribed_text),
+                    processing_time_ms=processing_time_ms
+                )
+                logger.debug(f"Created domain event: {transcription_completed_event}")
+                
+                # Emit UI signal
                 logger.info(f"Transcription complete: {transcribed_text[:50]}...")
                 self.transcription_complete.emit(transcribed_text)
                 
-                # If LLM processing is enabled and we have a processing method available, process the text
-                if (self.settings.llm.enabled and 
-                    (self.text_processor is not None or self.embedded_processor is not None)):
-                    self._process_text_with_llm(transcribed_text)
             else:
                 logger.warning("Transcription failed")
                 self.recording_failed.emit("Transcription failed")
+                
+                # Create and log domain event
+                transcription_failed_event = TranscriptionFailed(
+                    recording_id=recording_id,
+                    error_message="Transcription failed or returned empty result"
+                )
+                logger.debug(f"Created domain event: {transcription_failed_event}")
             
             return recording_path
                 
@@ -267,6 +399,14 @@ class RecordingService(QObject):
             logger.error(f"Error stopping recording: {e}", exc_info=True)
             self.is_recording = False
             self.recording_failed.emit(str(e))
+            
+            # Create and log domain event
+            recording_failed_event = RecordingFailed(
+                error_message=str(e),
+                exception=e
+            )
+            logger.debug(f"Created domain event: {recording_failed_event}")
+            
             return None
     
     def _on_process_text_hotkey(self):
@@ -278,12 +418,23 @@ class RecordingService(QObject):
             
         self._process_text_with_llm(self.last_transcription)
     
-    def _process_text_with_llm(self, text: str):
+    def _process_text_with_llm(self, text, transcription_id=None):
         """Process text using the LLM
         
         Args:
             text: Text to process
+            transcription_id: ID of the transcription entity if available
         """
+        # Create domain event
+        if transcription_id:
+            processing_type = getattr(ProcessingType, self.settings.llm.default_processing_type.upper(), ProcessingType.SUMMARIZE)
+            
+            llm_processing_started_event = LLMProcessingStarted(
+                transcription_id=transcription_id,
+                processing_type=processing_type
+            )
+            logger.debug(f"Created domain event: {llm_processing_started_event}")
+        
         # First check if we're using the embedded model
         if self.settings.llm.use_embedded_model and self.embedded_processor:
             logger.debug(f"Processing text with embedded LLM: {text[:50]}...")
@@ -370,7 +521,7 @@ class RecordingService(QObject):
         system = platform.system()
         
         if system == 'Windows':
-            from ..infrastructure.hotkeys.windows import WindowsHotkeyHandler
+            from ..hotkeys.windows import WindowsHotkeyHandler
             return WindowsHotkeyHandler()
         elif system == 'Darwin':  # macOS
             # Future implementation
@@ -409,4 +560,38 @@ class RecordingService(QObject):
         except Exception as e:
             logger.error(f"Error starting recording: {e}", exc_info=True)
             self.is_recording = False
-            self.recording_failed.emit(str(e)) 
+            self.recording_failed.emit(str(e))
+
+    def update_settings(self, settings):
+        """Update the service with new settings.
+        
+        Args:
+            settings: New application settings object
+        """
+        logger.debug("Updating recording service settings")
+        self.settings = settings
+        
+        # Update components that depend on settings
+        if self.settings.llm.enabled:
+            self._initialize_llm_processor()
+        
+        # Update audio recorder settings if they changed
+        if (self.audio_recorder.sample_rate != self.settings.audio.sample_rate or
+            self.audio_recorder.channels != self.settings.audio.channels or
+            self.audio_recorder.device != self.settings.audio.input_device):
+            
+            logger.debug(f"Updating audio recorder settings: "
+                        f"device={self.settings.audio.input_device}, "
+                        f"sample_rate={self.settings.audio.sample_rate}, "
+                        f"channels={self.settings.audio.channels}")
+            
+            self.audio_recorder.update_settings(
+                sample_rate=self.settings.audio.sample_rate,
+                channels=self.settings.audio.channels,
+                device=self.settings.audio.input_device
+            )
+        
+        # Log updated settings
+        self._log_audio_settings()
+        
+        return True 

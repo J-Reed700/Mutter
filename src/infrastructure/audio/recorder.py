@@ -152,6 +152,36 @@ class AudioRecorder:
         except Exception as e:
             logger.error(f"Error validating device settings: {e}")
     
+    def update_settings(self, sample_rate=None, channels=None, device=None):
+        """Update recorder settings.
+        
+        Args:
+            sample_rate: New sample rate for recording
+            channels: New number of audio channels
+            device: New audio input device to use
+            
+        Returns:
+            bool: True if settings were updated successfully
+        """
+        logger.debug(f"Updating audio recorder settings: sample_rate={sample_rate}, channels={channels}, device={device}")
+        
+        # Only update settings if not currently recording
+        if self.recording:
+            logger.warning("Cannot update settings while recording is in progress")
+            return False
+            
+        # Update settings if provided
+        if sample_rate is not None:
+            self.sample_rate = sample_rate
+            
+        if channels is not None:
+            self.channels = channels
+            
+        if device is not None:
+            self.device = device
+            
+        return True
+    
     def start_recording(self):
         """Start recording audio in a separate thread."""
         with self._lock:
@@ -281,4 +311,47 @@ class AudioRecorder:
             audio_min = np.min(latest_audio)
             audio_max = np.max(latest_audio)
             audio_mean = np.mean(np.abs(latest_audio))
-            logger.debug(f"Current audio frame - min: {audio_min:.6f}, max: {audio_max:.6f}, mean: {audio_mean:.6f}") 
+            logger.debug(f"Current audio frame - min: {audio_min:.6f}, max: {audio_max:.6f}, mean: {audio_mean:.6f}")
+    
+    def get_last_recording_duration(self) -> float:
+        """Get the duration of the last recording in seconds.
+        
+        Returns:
+            float: Duration in seconds or 0 if no recording available
+        """
+        try:
+            if not self._audio_data:
+                return 0
+                
+            # Calculate duration from total samples / sample rate
+            total_samples = sum(chunk.shape[0] for chunk in self._audio_data)
+            return total_samples / self.sample_rate
+        except Exception as e:
+            logger.error(f"Error calculating recording duration: {e}")
+            return 0
+    
+    def get_last_recording_info(self) -> dict:
+        """Get information about the last recording.
+        
+        Returns:
+            dict: Recording information or empty dict if no recording available
+        """
+        try:
+            if not self._audio_data:
+                return {}
+                
+            # Calculate some basic audio statistics
+            audio_data = np.concatenate(self._audio_data, axis=0)
+            return {
+                "duration_seconds": len(audio_data) / self.sample_rate,
+                "sample_rate": self.sample_rate,
+                "channels": self.channels,
+                "samples": len(audio_data),
+                "min_amplitude": float(np.min(audio_data)),
+                "max_amplitude": float(np.max(audio_data)),
+                "mean_amplitude": float(np.mean(np.abs(audio_data))),
+                "is_silent": float(np.mean(np.abs(audio_data))) < 0.001
+            }
+        except Exception as e:
+            logger.error(f"Error getting recording info: {e}")
+            return {} 

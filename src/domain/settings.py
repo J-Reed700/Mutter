@@ -45,6 +45,7 @@ class AppearanceSettings:
     show_notifications: bool = True  # Whether to show system tray notifications
     mute_notifications: bool = True  # Whether to mute notification sounds
     auto_copy_to_clipboard: bool = True  # Whether to automatically copy transcription to clipboard
+    auto_paste: bool = True  # Whether to automatically paste transcription to active window
     theme: str = "Light"  # Theme name
 
 @dataclass

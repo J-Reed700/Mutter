@@ -18,7 +18,7 @@ from ..infrastructure.hotkeys.windows import WindowsHotkeyHandler
 from ..infrastructure.hotkeys.base import HotkeyHandler
 from ..infrastructure.transcription.transcriber import Transcriber
 from ..infrastructure.llm.processor import TextProcessor
-from .recording_service import RecordingService
+from ..infrastructure.recording.recording_service import RecordingService
 
 logger = logging.getLogger(__name__)
 

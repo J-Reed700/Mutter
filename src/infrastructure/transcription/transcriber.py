@@ -42,6 +42,10 @@ class Transcriber:
         
         logger.info(f"Using model cache directory: {model_cache_dir}")
         
+        # Add a property to track processing time
+        self.last_processing_time_ms = 0
+        self.model_version = None
+        
         try:
             logger.info(f"Initializing Whisper model '{model_size}' on {self.device} with {compute_type}")
             
@@ -93,6 +97,9 @@ class Transcriber:
         Returns:
             TranscriptionResult or None if transcription failed
         """
+        import time
+        start_time = time.time()
+        
         try:
             logger.info(f"Transcribing audio file: {audio_path}")
             
@@ -188,8 +195,22 @@ class Transcriber:
             )
             
             logger.info(f"Transcription complete: {len(result.text)} chars, {len(result.segments)} segments")
+            
+            # Calculate and store processing time
+            self.last_processing_time_ms = int((time.time() - start_time) * 1000)
+            logger.debug(f"Transcription took {self.last_processing_time_ms}ms")
+            
             return result
             
         except Exception as e:
             logger.error(f"Transcription failed: {e}", exc_info=True)
+            self.last_processing_time_ms = 0
             return None 
+
+    def get_last_processing_time(self):
+        """Get the processing time of the last transcription in milliseconds.
+        
+        Returns:
+            int: Processing time in milliseconds
+        """
+        return self.last_processing_time_ms 

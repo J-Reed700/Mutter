@@ -8,8 +8,6 @@ A powerful voice recording application with local speech-to-text transcription. 
 - Local speech-to-text transcription using Whisper
 - System tray integration for easy access
 - Automatic clipboard copy of transcriptions
-- Optional LLM processing for summarization (requires additional dependencies)
-- Cross-platform support (Windows, macOS coming soon)
 
 ## Installation
 
@@ -27,13 +25,19 @@ A powerful voice recording application with local speech-to-text transcription. 
    git clone https://github.com/yourusername/voice-recorder.git
    cd voice-recorder
 
+2. Install Python 3.11
+   https://www.python.org/downloads/release/python-3110/
+
    ```
-2. Install Poetry:
+   winget install -e --id Python.Python.3.11
+   ```
+
+3. Install Poetry:
     ```
     pip install poetry
     ```
 
-3. Install the dependencies using Poetry:
+4. Install the dependencies using Poetry:
    ```
    Optional: Lock the dependencies
    python -m poetry lock
@@ -47,7 +51,7 @@ A powerful voice recording application with local speech-to-text transcription. 
    python -m poetry install --extras llm
    ```
 
-4. Activate the virtual environment created by Poetry:
+5. Activate the virtual environment created by Poetry:
    ```
    python -m poetry shell
    ```

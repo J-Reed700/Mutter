@@ -34,10 +34,8 @@ A powerful voice recording application with local speech-to-text transcription. 
     ```
 
 3. Install the dependencies using Poetry:
-
-Optional: Lock the dependencies
-
    ```
+   Optional: Lock the dependencies
    python -m poetry lock
    ```
 

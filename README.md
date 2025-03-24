@@ -90,7 +90,7 @@ If you're using the application on multiple machines:
 
 8. You can press `Ctrl+Shift+Q` to quit the application.
 
-### LLM Processing
+### LLM Processing, Added in future updates
 
 1. To use LLM processing, you need to have an LLM server running.
 
@@ -100,7 +100,6 @@ If you're using the application on multiple machines:
 
 4. You can also use the `python -m poetry install --extras llm` command to install the LLM dependencies and run the application with embedded LLM processing.
 
-5. To use the embedded LLM processing, press `Ctrl+Shift+P` to process the current transcription on clipboard.
 
 ## Configuration
 
@@ -115,7 +114,7 @@ If you're using the application on multiple machines:
 To build standalone executables:
 
 ```
-python package_builder.py
+python build_executable.py
 ```
 
 Note: The default build does NOT include local LLM dependencies (PyTorch/Transformers) to keep the package size manageable. If you need embedded LLM functionality, make sure to uncomment the corresponding lines in requirements.txt before building.

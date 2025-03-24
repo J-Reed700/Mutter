@@ -96,12 +96,14 @@ class RecordingService(QObject):
     
     def _register_hotkeys(self):
         """Register the hotkeys from settings"""
+        # Log all hotkeys being registered
+        logger.info(f"Registering hotkeys from settings: "
+                   f"record_key={self.settings.hotkeys.record_key.toString()}, "
+                   f"quit_key={self.settings.hotkeys.quit_key.toString() if self.settings.hotkeys.quit_key else 'None'}, "
+                   f"process_text_key={self.settings.hotkeys.process_text_key.toString() if self.settings.hotkeys.process_text_key else 'None'}")
+        
         # Register record hotkey
         self.hotkey_handler.register_hotkey(self.settings.hotkeys.record_key)
-        
-        # Register pause key if configured
-        if self.settings.hotkeys.pause_key:
-            self.hotkey_handler.register_hotkey(self.settings.hotkeys.pause_key)
         
         # Register process text key if configured
         # Avoid registering as both a regular hotkey and a process text hotkey
@@ -115,14 +117,33 @@ class RecordingService(QObject):
             # Now register it as a process text hotkey
             self.hotkey_handler.register_process_text_hotkey(self.settings.hotkeys.process_text_key)
             
-        # Register the exit hotkey (Ctrl+Shift+Q)
-        exit_hotkey = QKeySequence("Ctrl+Shift+Q")
-        if exit_hotkey not in self.hotkey_handler.registered_hotkeys:
-            success = self.hotkey_handler.register_hotkey(exit_hotkey)
-            if success:
-                logger.info("Successfully registered exit hotkey (Ctrl+Shift+Q)")
-            else:
-                logger.warning("Failed to register exit hotkey (Ctrl+Shift+Q)")
+        # Register the exit/quit hotkey
+        if self.settings.hotkeys.quit_key:
+            exit_hotkey = self.settings.hotkeys.quit_key
+            logger.info(f"Using quit_key from settings: {exit_hotkey.toString()}")
+            if exit_hotkey not in self.hotkey_handler.registered_hotkeys:
+                success = self.hotkey_handler.register_hotkey(exit_hotkey)
+                if success:
+                    # Set the exit_hotkey property so the handler knows this is the exit hotkey
+                    self.hotkey_handler.exit_hotkey = exit_hotkey
+                    logger.info(f"Successfully registered exit hotkey ({exit_hotkey.toString()})")
+                else:
+                    logger.warning(f"Failed to register exit hotkey ({exit_hotkey.toString()})")
+        else:
+            # Use default Ctrl+Shift+Q if no quit key is configured
+            exit_hotkey = QKeySequence("Ctrl+Shift+Q")
+            logger.info(f"No quit_key in settings, using default: {exit_hotkey.toString()}")
+            if exit_hotkey not in self.hotkey_handler.registered_hotkeys:
+                success = self.hotkey_handler.register_hotkey(exit_hotkey)
+                if success:
+                    # Set the exit_hotkey property so the handler knows this is the exit hotkey
+                    self.hotkey_handler.exit_hotkey = exit_hotkey
+                    logger.info("Successfully registered default exit hotkey (Ctrl+Shift+Q)")
+                else:
+                    logger.warning("Failed to register default exit hotkey (Ctrl+Shift+Q)")
+                # Save this default to settings
+                self.settings.hotkeys.quit_key = exit_hotkey
+                self.settings_repository.save(self.settings)
     
     def set_hotkey(self, key_sequence: QKeySequence) -> bool:
         """Set a new hotkey for recording
@@ -144,7 +165,7 @@ class RecordingService(QObject):
                     key == self.hotkey_handler.registered_process_text_hotkey):
                     continue
                     
-                if key.toString() == "Ctrl+Shift+Q":  # Exit hotkey
+                if key == self.settings.hotkeys.quit_key:  # Quit hotkey
                     continue
                     
                 old_hotkeys.append(key)
@@ -173,7 +194,7 @@ class RecordingService(QObject):
             return False
     
     def set_process_text_hotkey(self, key_sequence: QKeySequence) -> bool:
-        """Set a new hotkey for processing clipboard text
+        """Set a new hotkey for processing text
         
         Args:
             key_sequence: The new key sequence to use
@@ -184,13 +205,6 @@ class RecordingService(QObject):
         logger.debug(f"Setting new process text hotkey: {key_sequence.toString()}")
         
         try:
-            # Unregister old process text hotkey if it exists
-            if (self.hotkey_handler.registered_process_text_hotkey is not None and
-                self.hotkey_handler.registered_process_text_hotkey in self.hotkey_handler.registered_hotkeys):
-                logger.debug(f"Unregistering old process text hotkey: {self.hotkey_handler.registered_process_text_hotkey.toString()}")
-                self.hotkey_handler.unregister_hotkey(self.hotkey_handler.registered_process_text_hotkey)
-            
-            # Register new process text hotkey
             success = self.hotkey_handler.register_process_text_hotkey(key_sequence)
             
             if success:
@@ -206,6 +220,49 @@ class RecordingService(QObject):
                 
         except Exception as e:
             logger.error(f"Error setting process text hotkey: {e}", exc_info=True)
+            return False
+    
+    def set_quit_hotkey(self, key_sequence: QKeySequence) -> bool:
+        """Set a new hotkey for quitting the application
+        
+        Args:
+            key_sequence: The new key sequence to use
+            
+        Returns:
+            bool: True if the hotkey was successfully registered, False otherwise
+        """
+        logger.debug(f"Setting new quit hotkey: {key_sequence.toString()}")
+        
+        try:
+            # Find and unregister the old exit hotkey if it exists
+            old_exit_hotkey = None
+            for key in list(self.hotkey_handler.registered_hotkeys.keys()):
+                if key == self.settings.hotkeys.quit_key:
+                    old_exit_hotkey = key
+                    break
+            
+            if old_exit_hotkey:
+                logger.debug(f"Unregistering old quit hotkey: {old_exit_hotkey.toString()}")
+                self.hotkey_handler.unregister_hotkey(old_exit_hotkey)
+            
+            # Register the new quit hotkey
+            success = self.hotkey_handler.register_hotkey(key_sequence)
+            
+            if success:
+                # Update settings
+                self.settings.hotkeys.quit_key = key_sequence
+                # Set the exit_hotkey property so the handler knows this is the exit hotkey
+                self.hotkey_handler.exit_hotkey = key_sequence
+                # Make sure the settings are saved
+                self.settings_repository.save(self.settings)
+                logger.info(f"Successfully registered quit hotkey: {key_sequence.toString()}")
+            else:
+                logger.warning(f"Failed to register quit hotkey: {key_sequence.toString()}")
+                
+            return success
+                
+        except Exception as e:
+            logger.error(f"Error setting quit hotkey: {e}", exc_info=True)
             return False
     
     def _on_hotkey_pressed(self):
@@ -488,6 +545,13 @@ class RecordingService(QObject):
             settings: New application settings object
         """
         logger.debug("Updating recording service settings")
+        
+        # Store previous hotkey settings for comparison
+        old_record_key = self.settings.hotkeys.record_key
+        old_quit_key = self.settings.hotkeys.quit_key
+        old_process_text_key = self.settings.hotkeys.process_text_key
+        
+        # Update service settings
         self.settings = settings
         
         # Update components that depend on settings
@@ -509,6 +573,30 @@ class RecordingService(QObject):
                 channels=self.settings.audio.channels,
                 device=self.settings.audio.input_device
             )
+        
+        # Check if any hotkeys changed and re-register if needed
+        if (old_record_key != self.settings.hotkeys.record_key or
+            old_quit_key != self.settings.hotkeys.quit_key or
+            old_process_text_key != self.settings.hotkeys.process_text_key):
+            logger.info("Hotkey settings changed, re-registering hotkeys")
+            
+            # Unregister all existing hotkeys first
+            if self.hotkey_handler:
+                for key in list(self.hotkey_handler.registered_hotkeys.keys()):
+                    logger.debug(f"Unregistering hotkey: {key.toString()}")
+                    self.hotkey_handler.unregister_hotkey(key)
+                
+                # Also unregister process text hotkey if it exists
+                if self.hotkey_handler.registered_process_text_hotkey:
+                    logger.debug(f"Unregistering process text hotkey: {self.hotkey_handler.registered_process_text_hotkey.toString()}")
+                    hotkey_id = self.hotkey_handler.process_text_hotkey_id
+                    if hotkey_id is not None:
+                        self.hotkey_handler.unregister_hotkey(self.hotkey_handler.registered_process_text_hotkey)
+                    self.hotkey_handler.registered_process_text_hotkey = None
+                    self.hotkey_handler.process_text_hotkey_id = None
+            
+            # Register new hotkeys
+            self._register_hotkeys()
         
         # Log updated settings
         self._log_audio_settings()

@@ -207,6 +207,20 @@ class AppBootstrap:
     def _on_exit_hotkey(self):
         """Handle exit hotkey press event."""
         logger.info("Exit hotkey pressed, shutting down application")
+        
+        # Log current state of hotkeys for debugging
+        if hasattr(self.service_manager.recording_service, 'hotkey_handler'):
+            handler = self.service_manager.recording_service.hotkey_handler
+            if hasattr(handler, 'exit_hotkey') and handler.exit_hotkey:
+                logger.info(f"Current exit_hotkey in handler: {handler.exit_hotkey.toString()}")
+            else:
+                logger.warning("No exit_hotkey set in handler")
+            
+            # Log all registered hotkeys
+            if hasattr(handler, 'registered_hotkeys'):
+                hotkeys = handler.registered_hotkeys
+                logger.info(f"Registered hotkeys: {', '.join([k.toString() for k in hotkeys.keys()])}")
+            
         self.app.quit()
     
     def _show_error(self, message):

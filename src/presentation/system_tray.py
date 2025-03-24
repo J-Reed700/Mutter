@@ -108,13 +108,13 @@ class SystemTrayIcon(QSystemTrayIcon):
         self.menu.addAction(self.recent_transcription_action)
         
         # Add recent LLM processed text action
-        self.recent_llm_action = QAction("No LLM processed text")
-        self.recent_llm_action.setEnabled(False)
-        llm_font = QFont()
-        llm_font.setPointSize(9)
-        llm_font.setItalic(True)
-        self.recent_llm_action.setFont(llm_font)
-        self.menu.addAction(self.recent_llm_action)
+        #   self.recent_llm_action = QAction("No LLM processed text")
+        #   self.recent_llm_action.setEnabled(False)
+        #   llm_font = QFont()
+        #   llm_font.setPointSize(9)
+        #   llm_font.setItalic(True)
+        #   self.recent_llm_action.setFont(llm_font)
+        #   self.menu.addAction(self.recent_llm_action)
         
         # Add copy to clipboard action with icon
         self.copy_action = QAction("Copy to Clipboard")
@@ -127,12 +127,12 @@ class SystemTrayIcon(QSystemTrayIcon):
         self.menu.addAction(self.copy_action)
         
         # Add copy LLM result to clipboard action
-        self.copy_llm_action = QAction("Copy LLM Result to Clipboard")
-        self.copy_llm_action.setEnabled(False)
-        self.copy_llm_action.triggered.connect(self.copy_llm_to_clipboard)
-        if not clipboard_icon.isNull():
-            self.copy_llm_action.setIcon(clipboard_icon)
-        self.menu.addAction(self.copy_llm_action)
+        #   self.copy_llm_action = QAction("Copy LLM Result to Clipboard")
+        #   self.copy_llm_action.setEnabled(False)
+        #   self.copy_llm_action.triggered.connect(self.copy_llm_to_clipboard)
+        #   if not clipboard_icon.isNull():
+        #       self.copy_llm_action.setIcon(clipboard_icon)
+        #   self.menu.addAction(self.copy_llm_action)
         
         self.menu.addSeparator()
         
@@ -165,7 +165,7 @@ class SystemTrayIcon(QSystemTrayIcon):
         self.setContextMenu(self.menu)
         
         # Set tooltip
-        self.setToolTip("Voice Recorder\nReady")
+        self.setToolTip("Mutter\nReady")
         
         # Store the last transcription and processed text
         self.last_transcription = ""
@@ -313,7 +313,7 @@ class SystemTrayIcon(QSystemTrayIcon):
     def on_recording_started(self):
         """Handle recording started signal"""
         self.status_action.setText("● Recording...")
-        self.setToolTip("Voice Recorder\nRecording in progress")
+        self.setToolTip("Mutter\nRecording in progress")
         
         # Set the recording state
         self.is_recording = True
@@ -348,7 +348,7 @@ class SystemTrayIcon(QSystemTrayIcon):
     def on_recording_stopped(self, file_path: Path):
         """Handle recording stopped signal"""
         self.status_action.setText("Processing...")
-        self.setToolTip("Voice Recorder\nProcessing recording")
+        self.setToolTip("Mutter\nProcessing recording")
         
         # Set recording state
         self.is_recording = False
@@ -365,7 +365,7 @@ class SystemTrayIcon(QSystemTrayIcon):
     def on_recording_failed(self, error_message: str):
         """Handle recording failed signal"""
         self.status_action.setText("Ready")
-        self.setToolTip("Voice Recorder\nReady")
+        self.setToolTip("Mutter\nReady")
         
         # Restore original icon
         icon_path = self._find_icon(f"microphone_{16 if platform.system() == 'Windows' else 32}.png", "microphone.png")
@@ -415,7 +415,7 @@ class SystemTrayIcon(QSystemTrayIcon):
         
         # Update status
         self.status_action.setText("Ready")
-        self.setToolTip("Voice Recorder\nReady")
+        self.setToolTip("Mutter\nReady")
         
         # Copy to clipboard automatically without showing notification
         self.copy_to_clipboard()
@@ -539,8 +539,18 @@ class SystemTrayIcon(QSystemTrayIcon):
         """Show the settings window"""
         if self.settings_window is None or not self.settings_window.isVisible():
             if self.service_manager:
+                # Force reload the settings from the repository to ensure we have the latest
+                logger.info("Opening settings window - forcing reload of settings")
+                self.service_manager.reload_settings()
+                settings = self.service_manager.settings
+                
+                # Log key settings values for debugging
+                logger.info(f"Loading settings window with: "
+                           f"quit_key={settings.hotkeys.quit_key.toString() if settings.hotkeys.quit_key else 'None'}, "
+                           f"record_key={settings.hotkeys.record_key.toString()}")
+                
                 self.settings_window = SettingsWindow(
-                    settings=self.service_manager.settings,
+                    settings=settings,
                     settings_repository=self.service_manager.recording_service.settings_repository
                 )
                 
@@ -1058,4 +1068,9 @@ class SystemTrayIcon(QSystemTrayIcon):
         """Handle settings saved event"""
         if self.service_manager:
             # Let service manager reload settings
-            self.service_manager.reload_settings() 
+            self.service_manager.reload_settings()
+            
+            # Explicitly re-register hotkeys after settings are reloaded
+            if hasattr(self.service_manager.recording_service, '_register_hotkeys'):
+                logger.info("Re-registering hotkeys after settings saved")
+                self.service_manager.recording_service._register_hotkeys() 

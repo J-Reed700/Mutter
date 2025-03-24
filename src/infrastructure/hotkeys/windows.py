@@ -59,6 +59,7 @@ class WindowsHotkeyHandler(HotkeyHandler):
         self._is_key_held = False  # Track key state
         self.registered_process_text_hotkey: Optional[QKeySequence] = None
         self.process_text_hotkey_id: Optional[int] = None
+        self.exit_hotkey: Optional[QKeySequence] = None  # Track the exit hotkey
         self._setup_message_window()
 
     def _setup_message_window(self) -> None:
@@ -92,9 +93,9 @@ class WindowsHotkeyHandler(HotkeyHandler):
                 if key_sequence:
                     logger.debug(f"Matched to hotkey: {key_sequence.toString()}")
                     
-                    # Special handling for Ctrl+Shift+Q (exit hotkey)
-                    if key_sequence.toString() == "Ctrl+Shift+Q":
-                        logger.info("Exit hotkey detected, emitting exit_hotkey_pressed")
+                    # Special handling for exit hotkey
+                    if self.exit_hotkey and key_sequence == self.exit_hotkey:
+                        logger.info(f"Exit hotkey detected: {key_sequence.toString()} (ID={hotkey_id}), emitting exit_hotkey_pressed")
                         self.exit_hotkey_pressed.emit()
                         return True
                     

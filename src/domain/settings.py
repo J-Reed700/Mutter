@@ -5,7 +5,7 @@ from PySide6.QtGui import QKeySequence
 @dataclass
 class HotkeySettings:
     record_key: QKeySequence
-    pause_key: Optional[QKeySequence] = None
+    quit_key: Optional[QKeySequence] = None
     process_text_key: Optional[QKeySequence] = None  # New hotkey for LLM processing
 
 @dataclass

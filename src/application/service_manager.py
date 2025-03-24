@@ -145,6 +145,11 @@ class ServiceManager(QObject):
         # Reload settings from repository
         self._settings = self._settings_repository.load()
         
+        # Log key settings values after reload
+        logger.info(f"Reloaded settings with values: "
+                   f"quit_key={self._settings.hotkeys.quit_key.toString() if self._settings.hotkeys.quit_key else 'None'}, "
+                   f"record_key={self._settings.hotkeys.record_key.toString()}")
+        
         # Update services with new settings
         if self._recording_service:
             # Check if update_settings method exists

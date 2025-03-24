@@ -37,6 +37,11 @@ class SettingsWindow(QMainWindow):
         self.save_requested = False  # Track if Save button was clicked
         self.settings_changed = False  # Track if any settings were actually changed
         
+        # Log settings values at initialization
+        logger.info(f"SettingsWindow initialized with: "
+                   f"quit_key={self.settings.hotkeys.quit_key.toString() if self.settings.hotkeys.quit_key else 'None'}, "
+                   f"record_key={self.settings.hotkeys.record_key.toString()}")
+        
         self.setWindowTitle("Memo Settings")
         self.setMinimumSize(600, 500)
         
@@ -151,45 +156,25 @@ class SettingsWindow(QMainWindow):
         
         layout.addWidget(record_group)
         
-        # Pause hotkey
-        pause_group = QGroupBox("Pause Hotkey (Optional)")
-        pause_layout = QFormLayout(pause_group)
-        pause_layout.setContentsMargins(15, 20, 15, 15)
-        pause_layout.setSpacing(10)
+        # Quit hotkey
+        quit_group = QGroupBox("Quit Hotkey")
+        quit_layout = QFormLayout(quit_group)
+        quit_layout.setContentsMargins(15, 20, 15, 15)
+        quit_layout.setSpacing(10)
         
-        self.pause_hotkey_edit = QKeySequenceEdit(
-            self.settings.hotkeys.pause_key or QKeySequence()
+        self.quit_hotkey_edit = QKeySequenceEdit(
+            self.settings.hotkeys.quit_key or QKeySequence()
         )
-        self.pause_hotkey_edit.setMinimumWidth(200)
-        self.pause_hotkey_edit.editingFinished.connect(self._mark_settings_changed)
-        pause_layout.addRow("Pause Key:", self.pause_hotkey_edit)
+        self.quit_hotkey_edit.setMinimumWidth(200)
+        self.quit_hotkey_edit.editingFinished.connect(self._mark_settings_changed)
+        quit_layout.addRow("Quit Key:", self.quit_hotkey_edit)
         
         # Add a description
-        pause_desc = QLabel("Press this key combination to pause/resume recording")
-        pause_desc.setStyleSheet("color: #666666; font-size: 12px;")
-        pause_layout.addRow("", pause_desc)
+        quit_desc = QLabel("Press this key combination to quit the application")
+        quit_desc.setStyleSheet("color: #666666; font-size: 12px;")
+        quit_layout.addRow("", quit_desc)
         
-        layout.addWidget(pause_group)
-        
-        # Process text hotkey
-        process_group = QGroupBox("Process Text Hotkey")
-        process_layout = QFormLayout(process_group)
-        process_layout.setContentsMargins(15, 20, 15, 15)
-        process_layout.setSpacing(10)
-        
-        self.process_hotkey_edit = QKeySequenceEdit(
-            self.settings.hotkeys.process_text_key or QKeySequence("Ctrl+Shift+P")
-        )
-        self.process_hotkey_edit.setMinimumWidth(200)
-        self.process_hotkey_edit.editingFinished.connect(self._mark_settings_changed)
-        process_layout.addRow("Process Text Key:", self.process_hotkey_edit)
-        
-        # Add a description
-        process_desc = QLabel("Press this key combination to process transcribed text with LLM")
-        process_desc.setStyleSheet("color: #666666; font-size: 12px;")
-        process_layout.addRow("", process_desc)
-        
-        layout.addWidget(process_group)
+        layout.addWidget(quit_group)
         
         layout.addStretch()
         
@@ -711,25 +696,25 @@ class SettingsWindow(QMainWindow):
         layout.addWidget(notif_group)
         
         # Theme settings (for future implementation)
-        theme_group = QGroupBox("Theme")
-        theme_layout = QFormLayout(theme_group)
-        theme_layout.setContentsMargins(15, 20, 15, 15)
-        theme_layout.setSpacing(10)
+        # theme_group = QGroupBox("Theme")
+        # theme_layout = QFormLayout(theme_group)
+        # theme_layout.setContentsMargins(15, 20, 15, 15)
+        # theme_layout.setSpacing(10)
+        # 
+        # self.theme_combo = QComboBox()
+        # self.theme_combo.setMinimumWidth(200)
+        # self.theme_combo.setMinimumHeight(30)
+        # self.theme_combo.addItems(['Light', 'Dark', 'System'])
+        # self.theme_combo.setCurrentText(self.settings.appearance.theme if hasattr(self.settings, 'appearance') else 'Light')
+        # self.theme_combo.currentIndexChanged.connect(self._mark_settings_changed)
+        # theme_layout.addRow("Theme:", self.theme_combo)
+        # 
+        # # Add a theme description
+        # theme_desc = QLabel("Theme changes will apply after restart")
+        # theme_desc.setStyleSheet("color: #666666; font-size: 12px;")
+        # theme_layout.addRow("", theme_desc)
         
-        self.theme_combo = QComboBox()
-        self.theme_combo.setMinimumWidth(200)
-        self.theme_combo.setMinimumHeight(30)
-        self.theme_combo.addItems(['Light', 'Dark', 'System'])
-        self.theme_combo.setCurrentText(self.settings.appearance.theme if hasattr(self.settings, 'appearance') else 'Light')
-        self.theme_combo.currentIndexChanged.connect(self._mark_settings_changed)
-        theme_layout.addRow("Theme:", self.theme_combo)
-        
-        # Add a theme description
-        theme_desc = QLabel("Theme changes will apply after restart")
-        theme_desc.setStyleSheet("color: #666666; font-size: 12px;")
-        theme_layout.addRow("", theme_desc)
-        
-        layout.addWidget(theme_group)
+        # layout.addWidget(theme_group)
         layout.addStretch()
         
         return widget
@@ -866,87 +851,99 @@ class SettingsWindow(QMainWindow):
     
     @Slot()
     def _save_settings(self):
-        """Save settings and apply them"""
-        # Save the state of our save request
-        self.save_requested = True
+        """Save settings to the repository when the Save button is clicked"""
+        logger.debug("Saving settings")
         
-        # If no settings were changed, just close the window
-        if not self.settings_changed:
-            self.close()
-            return
-        
-        # Update settings with values from UI
         # 1. Hotkeys tab
-        record_key = self.record_hotkey_edit.keySequence()
-        self.settings.hotkeys.record_key = record_key
-        
-        if self.process_hotkey_edit.keySequence().isEmpty():
-            self.settings.hotkeys.process_text_key = None
-        else:
-            self.settings.hotkeys.process_text_key = self.process_hotkey_edit.keySequence()
+        if hasattr(self, 'record_hotkey_edit'):
+            self.settings.hotkeys.record_key = self.record_hotkey_edit.keySequence()
+        if hasattr(self, 'quit_hotkey_edit'):
+            self.settings.hotkeys.quit_key = self.quit_hotkey_edit.keySequence()
         
         # 2. Audio tab
-        self.settings.audio.input_device = self.device_combo.currentData()
-        self.settings.audio.sample_rate = self.sample_rate_combo.currentData()
-        self.settings.audio.channels = self.channels_spin.value()
+        if hasattr(self, 'device_combo'):
+            self.settings.audio.input_device = self.device_combo.currentData()
+        if hasattr(self, 'sample_rate_combo'):
+            self.settings.audio.sample_rate = self.sample_rate_combo.currentData()
+        if hasattr(self, 'channels_spin'):
+            self.settings.audio.channels = self.channels_spin.value()
         
         # 3. Transcription tab
-        self.settings.transcription.model = self.model_combo.currentText()
+        if hasattr(self, 'model_combo'):
+            self.settings.transcription.model = self.model_combo.currentText()
         
         # Extract device value from the selection (remove description)
-        device_text = self.device_type_combo.currentText()
-        self.settings.transcription.device = "cpu" if device_text.startswith("cpu") else "cuda"
+        if hasattr(self, 'device_type_combo'):
+            device_text = self.device_type_combo.currentText()
+            self.settings.transcription.device = "cpu" if device_text.startswith("cpu") else "cuda"
         
-        self.settings.transcription.language = self.language_combo.currentText()
-        if self.settings.transcription.language == "Auto-detect":
-            self.settings.transcription.language = None
+        if hasattr(self, 'language_combo'):
+            self.settings.transcription.language = self.language_combo.currentText()
+            if self.settings.transcription.language == "Auto-detect":
+                self.settings.transcription.language = None
+                
+        # Log key settings that are being saved
+        logger.info(f"Saving settings with values: "
+                   f"quit_key={self.settings.hotkeys.quit_key.toString() if self.settings.hotkeys.quit_key else 'None'}, "
+                   f"record_key={self.settings.hotkeys.record_key.toString()}, "
+                   f"input_device={self.settings.audio.input_device}, " 
+                   f"sample_rate={self.settings.audio.sample_rate}")
         
         # 4. LLM tab
-        self.settings.llm.enabled = self.llm_enabled_check.isChecked()
-        
-        # Check whether we're using embedded model or external API
-        self.settings.llm.use_embedded_model = self.embedded_radio.isChecked()
-        
-        if self.settings.llm.use_embedded_model:
-            # Get the embedded model name
-            model_name = self.embedded_model_combo.currentText()
+        if hasattr(self, 'llm_enabled_check'):
+            self.settings.llm.enabled = self.llm_enabled_check.isChecked()
             
-            # Ensure model names have proper repository prefix
-            if model_name == "distilbart-cnn-12-6":
-                model_name = "facebook/distilbart-cnn-12-6"
+            # Check whether we're using embedded model or external API
+            if hasattr(self, 'embedded_radio'):
+                self.settings.llm.use_embedded_model = self.embedded_radio.isChecked()
+                
+                if self.settings.llm.use_embedded_model and hasattr(self, 'embedded_model_combo'):
+                    # Get the embedded model name
+                    model_name = self.embedded_model_combo.currentText()
+                    
+                    # Ensure model names have proper repository prefix
+                    if model_name == "distilbart-cnn-12-6":
+                        model_name = "facebook/distilbart-cnn-12-6"
+                    
+                    self.settings.llm.embedded_model_name = model_name
+                    
+                    # If the model has been changed, we should show the download progress
+                    old_model = getattr(self.settings.llm, 'embedded_model_name', "")
+                    if old_model != model_name and hasattr(self, 'download_group'):
+                        self.download_group.setVisible(True)
+                        self.download_status_label.setText(f"Model will be downloaded when processing starts: {model_name}")
+                        QApplication.processEvents()  # Ensure UI updates
+                elif hasattr(self, 'server_url_input'):
+                    # External API settings
+                    # Get text directly from editable combo boxes
+                    if hasattr(self, 'llm_api_url_edit'):
+                        self.settings.llm.api_url = self.llm_api_url_edit.currentText().strip()
+                    if hasattr(self, 'llm_model_edit'):
+                        self.settings.llm.model = self.llm_model_edit.currentText().strip()
+                    
+                    # Ensure we have default values if empty
+                    if not self.settings.llm.api_url:
+                        self.settings.llm.api_url = "http://localhost:8080/v1"
+                    if not self.settings.llm.model:
+                        self.settings.llm.model = "llama3"
             
-            self.settings.llm.embedded_model_name = model_name
-            
-            # If the model has been changed, we should show the download progress
-            old_model = getattr(self.settings.llm, 'embedded_model_name', "")
-            if old_model != model_name:
-                self.download_group.setVisible(True)
-                self.download_status_label.setText(f"Model will be downloaded when processing starts: {model_name}")
-                QApplication.processEvents()  # Ensure UI updates
-        else:
-            # External API settings
-            # Get text directly from editable combo boxes
-            self.settings.llm.api_url = self.llm_api_url_edit.currentText().strip()
-            self.settings.llm.model = self.llm_model_edit.currentText().strip()
-            
-            # Ensure we have default values if empty
-            if not self.settings.llm.api_url:
-                self.settings.llm.api_url = "http://localhost:8080/v1"
-            if not self.settings.llm.model:
-                self.settings.llm.model = "llama3"
-        
-        # Processing type (common for both modes)
-        self.settings.llm.default_processing_type = self.processing_type_combo.currentData()
+            # Processing type (common for both modes)
+            if hasattr(self, 'processing_type_combo'):
+                self.settings.llm.default_processing_type = self.processing_type_combo.currentData()
         
         # 5. Appearance tab
         if not hasattr(self.settings, 'appearance'):
             from ...domain.settings import AppearanceSettings
             self.settings.appearance = AppearanceSettings()
-            
-        self.settings.appearance.show_notifications = self.show_notif_check.isChecked()
-        self.settings.appearance.auto_copy_to_clipboard = self.clipboard_check.isChecked()
-        self.settings.appearance.auto_paste = self.auto_paste_check.isChecked()
-        self.settings.appearance.theme = self.theme_combo.currentText()
+        
+        if hasattr(self, 'show_notif_check'):
+            self.settings.appearance.show_notifications = self.show_notif_check.isChecked()
+        if hasattr(self, 'clipboard_check'):
+            self.settings.appearance.auto_copy_to_clipboard = self.clipboard_check.isChecked()
+        if hasattr(self, 'auto_paste_check'):
+            self.settings.appearance.auto_paste = self.auto_paste_check.isChecked()
+        if hasattr(self, 'theme_combo'):
+            self.settings.appearance.theme = self.theme_combo.currentText()
         
         # Save settings
         try:
@@ -955,6 +952,10 @@ class SettingsWindow(QMainWindow):
             
             # Show a saved toast
             QMessageBox.information(self, "Settings Saved", "Settings have been saved successfully.")
+            
+            # Set save_requested to True to avoid the unsaved changes dialog
+            self.save_requested = True
+            self.settings_changed = False  # Reset the changed flag
             
             # Close the window
             self.close()

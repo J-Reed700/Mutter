@@ -15,6 +15,7 @@ from ..infrastructure.audio.recorder import AudioRecorder
 from ..infrastructure.transcription.transcriber import Transcriber
 from ..infrastructure.llm.processor import TextProcessor, LLMProcessingResult
 from ..infrastructure.llm.embedded_processor import EmbeddedTextProcessor
+from ..infrastructure.llm.download_manager import DownloadManager
 from ..infrastructure.recording.recording_service import RecordingService
 
 
@@ -49,6 +50,7 @@ class ServiceManager(QObject):
         self._transcriber = None
         self._text_processor = None
         self._embedded_processor = None
+        self._download_manager = None
         
         # Initialize everything
         self._initialize_core_dependencies()
@@ -75,6 +77,9 @@ class ServiceManager(QObject):
         """Initialize infrastructure components."""
         logger.debug("Initializing infrastructure components")
         
+        # Initialize download manager first
+        self._download_manager = DownloadManager()
+        
         # Initialize audio recorder
         self._audio_recorder = AudioRecorder(
             sample_rate=self._settings.audio.sample_rate,
@@ -89,9 +94,18 @@ class ServiceManager(QObject):
             compute_type="int8"
         )
         
+        # Disable LLM processors completely
+        # Uncomment the following code if you want to re-enable LLM functionality later
+        '''
         # Initialize LLM processors if enabled
         if self._settings.llm.enabled:
             self._initialize_llm_processors()
+        '''
+        
+        # Set LLM settings to disabled
+        if hasattr(self._settings, 'llm'):
+            self._settings.llm.enabled = False
+            logger.info("LLM features have been disabled")
     
     def _initialize_llm_processors(self):
         """Initialize LLM processors based on settings."""
@@ -106,7 +120,8 @@ class ServiceManager(QObject):
             # Initialize embedded processor if available and enabled
             try:
                 self._embedded_processor = EmbeddedTextProcessor(
-                    model_name=self._settings.llm.embedded_model_name
+                    model_name=self._settings.llm.embedded_model_name,
+                    progress_callback=self._download_manager.get_progress_callback()
                 )
             except Exception as e:
                 logger.error(f"Failed to initialize embedded LLM processor: {e}")
@@ -193,6 +208,11 @@ class ServiceManager(QObject):
     def embedded_processor(self) -> Optional[EmbeddedTextProcessor]:
         """Get the embedded LLM processor if available."""
         return self._embedded_processor
+    
+    @property
+    def download_manager(self) -> Optional[DownloadManager]:
+        """Get the download manager"""
+        return self._download_manager
     
     def shutdown(self):
         """Perform clean shutdown of all services."""

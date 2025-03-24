@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "voice-recorder"
 version = "0.1.0"
-description = "A Memo with automatic transcription"
+description = "A Mutter with automatic transcription"
 authors = ["Your Name <your.email@example.com>"]
 packages = [
     { include = "src" }

@@ -66,11 +66,12 @@ class SettingsRepository:
                 "default_processing_type": settings.llm.default_processing_type if hasattr(settings, 'llm') and settings.llm else "summarize",
                 "custom_prompt_templates": settings.llm.custom_prompt_templates if hasattr(settings, 'llm') and settings.llm and settings.llm.custom_prompt_templates else None,
                 "use_embedded_model": settings.llm.use_embedded_model if hasattr(settings, 'llm') and settings.llm else False,
-                "embedded_model_name": settings.llm.embedded_model_name if hasattr(settings, 'llm') and settings.llm else "distilbart-cnn-12-6"
+                "embedded_model_name": settings.llm.embedded_model_name if hasattr(settings, 'llm') and settings.llm else "sshleifer/distilbart-cnn-12-6"
             },
             "appearance": {
                 "show_notifications": settings.appearance.show_notifications if hasattr(settings, 'appearance') and settings.appearance else True,
                 "auto_copy_to_clipboard": settings.appearance.auto_copy_to_clipboard if hasattr(settings, 'appearance') and settings.appearance else True,
+                "auto_paste": settings.appearance.auto_paste if hasattr(settings, 'appearance') and settings.appearance else True,
                 "theme": settings.appearance.theme if hasattr(settings, 'appearance') and settings.appearance else "Light"
             }
         }
@@ -88,7 +89,17 @@ class SettingsRepository:
                 default_processing_type=data["llm"].get("default_processing_type", "summarize"),
                 custom_prompt_templates=data["llm"].get("custom_prompt_templates", None),
                 use_embedded_model=data["llm"].get("use_embedded_model", False),
-                embedded_model_name=data["llm"].get("embedded_model_name", "distilbart-cnn-12-6")
+                embedded_model_name=data["llm"].get("embedded_model_name", "sshleifer/distilbart-cnn-12-6")
+            )
+        
+        # Create Appearance settings if present in data
+        appearance_settings = None
+        if "appearance" in data:
+            appearance_settings = AppearanceSettings(
+                show_notifications=data["appearance"].get("show_notifications", True),
+                auto_copy_to_clipboard=data["appearance"].get("auto_copy_to_clipboard", True),
+                auto_paste=data["appearance"].get("auto_paste", True),
+                theme=data["appearance"].get("theme", "Light")
             )
         
         return Settings(
@@ -107,5 +118,6 @@ class SettingsRepository:
                 language=data["transcription"]["language"],
                 device=data["transcription"]["device"]
             ),
-            llm=llm_settings
+            llm=llm_settings,
+            appearance=appearance_settings
         ) 

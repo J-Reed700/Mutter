@@ -125,7 +125,7 @@ class WindowsHotkeyHandler(HotkeyHandler):
             win32gui.RegisterClass(wc)
             self._hwnd = win32gui.CreateWindow(
                 wc.lpszClassName,
-                "Memo Hotkey Window",
+                "Mutter Hotkey Window",
                 0, 0, 0, 0, 0, 0, 0, None, None
             )
             

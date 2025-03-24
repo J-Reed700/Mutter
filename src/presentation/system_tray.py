@@ -7,6 +7,10 @@ from .toast.custom_toast import CustomToast
 import logging
 import platform
 
+from .windows.settings import SettingsWindow
+from .windows.download_manager import DownloadManagerWindow
+from ..domain.settings import Settings
+
 logger = logging.getLogger(__name__)
 
 class SystemTrayIcon(QSystemTrayIcon):
@@ -15,7 +19,6 @@ class SystemTrayIcon(QSystemTrayIcon):
         
         # Settings for notifications (defaults)
         self.show_notifications = False
-        self.mute_notifications = True
         self.auto_paste = True  # Enable auto-paste by default
         
         # Create custom toast
@@ -142,6 +145,13 @@ class SystemTrayIcon(QSystemTrayIcon):
             self.settings_action.setIcon(settings_icon)
         self.menu.addAction(self.settings_action)
         
+        # Add downloads action with icon
+        # self.downloads_action = QAction("Downloads")
+        # self.downloads_action.triggered.connect(self.show_downloads)
+        # if not settings_icon.isNull():
+        #     self.downloads_action.setIcon(settings_icon)
+        # self.menu.addAction(self.downloads_action)
+        
         # Add quit action with icon
         quit_action = QAction("Quit")
         quit_action.triggered.connect(self.quit_application)
@@ -163,6 +173,13 @@ class SystemTrayIcon(QSystemTrayIcon):
         
         # Connect activation signal for double-click
         self.activated.connect(self.on_activated)
+
+        # Create reference to windows (don't initialize them yet)
+        self.settings_window = None
+        self.download_manager_window = None
+        
+        # Reference to service manager (set later)
+        self.service_manager = None
 
     def _find_icon(self, preferred_name, fallback_name):
         """Find an icon file in the resources directory
@@ -258,17 +275,15 @@ class SystemTrayIcon(QSystemTrayIcon):
         return paths[0]
 
     def update_settings(self, settings):
-        """Update tray settings from application settings"""
+        """Update settings related to notifications"""
+        logger.debug(f"Updating system tray settings")
         if hasattr(settings, 'appearance') and settings.appearance:
-            # Update notification settings from application settings
             self.show_notifications = settings.appearance.show_notifications
-            self.mute_notifications = settings.appearance.mute_notifications
-            # Update auto-paste setting if available
-            if hasattr(settings.appearance, 'auto_paste'):
-                self.auto_paste = settings.appearance.auto_paste
-            logger.debug(f"Settings updated: show_notifications={self.show_notifications}, "
-                        f"mute_notifications={self.mute_notifications}, "
+            self.auto_paste = settings.appearance.auto_paste
+            logger.debug(f"Updated settings: show_notifications={self.show_notifications}, "
                         f"auto_paste={self.auto_paste}")
+        else:
+            logger.debug("No appearance settings available")
 
     def show_notification(self, title, message, icon=QSystemTrayIcon.MessageIcon.Information, duration=3000):
         """Show a notification if enabled in settings
@@ -280,14 +295,7 @@ class SystemTrayIcon(QSystemTrayIcon):
             duration: Display duration in milliseconds
         """
         if self.show_notifications:
-            # PySide6 doesn't support ShowMessageHint.NoSound directly
-            # We can't control sound in PySide6 directly, so we just show the notification
-            # The system's notification sound settings will control whether sound is played
             self.showMessage(title, message, icon, duration)
-            
-            # Note: In PySide6, sound control for notifications needs to be handled at the system level
-            # If mute_notifications is True, the application can't directly control this
-            # Users should mute notification sounds in their system settings
 
     @Slot(QSystemTrayIcon.ActivationReason)
     def on_activated(self, reason):
@@ -297,6 +305,9 @@ class SystemTrayIcon(QSystemTrayIcon):
                 self.copy_to_clipboard()
                 # No notification needed, just log the action
                 logger.debug("Double-click triggered: transcription copied to clipboard")
+        elif reason == QSystemTrayIcon.Trigger:
+            # Single click - show/hide settings
+            self.show_settings()
 
     @Slot()
     def on_recording_started(self):
@@ -526,8 +537,46 @@ class SystemTrayIcon(QSystemTrayIcon):
 
     def show_settings(self):
         """Show the settings window"""
-        # This is connected externally
-        pass
+        if self.settings_window is None or not self.settings_window.isVisible():
+            if self.service_manager:
+                self.settings_window = SettingsWindow(
+                    settings=self.service_manager.settings,
+                    settings_repository=self.service_manager.recording_service.settings_repository
+                )
+                
+                # Connect signals
+                if hasattr(self.settings_window, 'settings_saved'):
+                    self.settings_window.settings_saved.connect(self._on_settings_saved)
+            else:
+                logger.error("Cannot show settings: service_manager not set")
+                return
+        
+        self.settings_window.show()
+        self.settings_window.raise_()
+        self.settings_window.activateWindow()
+
+    def show_downloads(self):
+        """Show the downloads window"""
+        # Show a notification that downloads are disabled
+        self.show_notification(
+            "Downloads Disabled",
+            "LLM features have been disabled in this version.",
+            QSystemTrayIcon.MessageIcon.Information,
+            3000
+        )
+        # Uncomment the following code block to enable download manager when needed
+        '''
+        if self.download_manager_window is None or not self.download_manager_window.isVisible():
+            self.download_manager_window = DownloadManagerWindow()
+            
+            # Connect to download manager
+            if self.service_manager and self.service_manager.download_manager:
+                self.service_manager.download_manager.register_progress_callback(self.download_manager_window)
+        
+        self.download_manager_window.show()
+        self.download_manager_window.raise_()
+        self.download_manager_window.activateWindow()
+        '''
 
     def quit_application(self):
         """Quit the application"""
@@ -995,4 +1044,18 @@ class SystemTrayIcon(QSystemTrayIcon):
                 logger.warning("Auto-paste for Linux not implemented yet")
                 
         except Exception as e:
-            logger.error(f"Error in auto-paste: {e}", exc_info=True) 
+            logger.error(f"Error in auto-paste: {e}", exc_info=True)
+
+    def set_service_manager(self, service_manager):
+        """Set the service manager reference
+        
+        Args:
+            service_manager: ServiceManager instance
+        """
+        self.service_manager = service_manager
+
+    def _on_settings_saved(self):
+        """Handle settings saved event"""
+        if self.service_manager:
+            # Let service manager reload settings
+            self.service_manager.reload_settings() 

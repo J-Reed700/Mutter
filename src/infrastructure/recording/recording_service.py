@@ -88,42 +88,11 @@ class RecordingService(QObject):
     
     def _initialize_llm_processor(self):
         """Initialize the LLM processor"""
-        try:
-            # Check if we're supposed to use embedded model but dependencies aren't available
-            if self.settings.llm.use_embedded_model and (not TORCH_AVAILABLE or not TRANSFORMERS_AVAILABLE):
-                logger.warning("Embedded LLM dependencies (PyTorch/Transformers) not available. "
-                              "Automatically falling back to external API.")
-                # Automatically switch to external API
-                self.settings.llm.use_embedded_model = False
-                # Try to save this change to settings for future runs
-                try:
-                    self.settings_repository.save(self.settings)
-                    logger.info("Updated settings to use external API for future runs")
-                except Exception as e:
-                    logger.error(f"Could not save updated LLM settings: {e}")
-            
-            if self.settings.llm.use_embedded_model:
-                # Initialize embedded processor
-                logger.info("Initializing embedded LLM processor")
-                self.embedded_processor = EmbeddedTextProcessor()
-                if self.settings.llm.embedded_model_name:
-                    self.embedded_processor.model_name = self.settings.llm.embedded_model_name
-                # Make sure to set text_processor to None when using embedded
-                self.text_processor = None
-                logger.info(f"Embedded LLM processor initialized with model: {self.settings.llm.embedded_model_name}")
-            else:
-                # Initialize external API processor
-                logger.info("Initializing external LLM processor")
-                self.text_processor = TextProcessor(api_url=self.settings.llm.api_url)
-                # Make sure to set embedded_processor to None when using external
-                self.embedded_processor = None
-                logger.info(f"External LLM processor initialized with API URL: {self.settings.llm.api_url}")
-            
-            logger.info("LLM processor initialized")
-        except Exception as e:
-            logger.error(f"Failed to initialize LLM processor: {e}")
-            self.text_processor = None
-            self.embedded_processor = None
+        # Skip LLM initialization completely
+        logger.info("LLM features have been disabled - skipping initialization")
+        self.text_processor = None
+        self.embedded_processor = None
+        return
     
     def _register_hotkeys(self):
         """Register the hotkeys from settings"""
@@ -254,6 +223,22 @@ class RecordingService(QObject):
         # Now stop the recording
         self.stop_recording()
     
+    def _delete_recording_file(self, file_path: Path):
+        """Delete the recording file after it's been transcribed.
+        
+        Args:
+            file_path: Path to the recording file
+        """
+        try:
+            if file_path and file_path.exists():
+                logger.debug(f"Deleting recording file: {file_path}")
+                file_path.unlink()
+                logger.info(f"Successfully deleted recording file: {file_path}")
+            else:
+                logger.debug(f"Recording file not found or invalid path: {file_path}")
+        except Exception as e:
+            logger.error(f"Error deleting recording file {file_path}: {e}")
+            
     def stop_recording(self):
         """Stop current recording and transcribe the audio."""
         if not self.is_recording:
@@ -382,6 +367,9 @@ class RecordingService(QObject):
                 logger.info(f"Transcription complete: {transcribed_text[:50]}...")
                 self.transcription_complete.emit(transcribed_text)
                 
+                # Delete the recording file after successful transcription
+                self._delete_recording_file(recording_path)
+                
             else:
                 logger.warning("Transcription failed")
                 self.recording_failed.emit("Transcription failed")
@@ -392,6 +380,9 @@ class RecordingService(QObject):
                     error_message="Transcription failed or returned empty result"
                 )
                 logger.debug(f"Created domain event: {transcription_failed_event}")
+                
+                # Delete the recording file even if transcription failed
+                self._delete_recording_file(recording_path)
             
             return recording_path
                 
@@ -425,88 +416,16 @@ class RecordingService(QObject):
             text: Text to process
             transcription_id: ID of the transcription entity if available
         """
-        # Create domain event
-        if transcription_id:
-            processing_type = getattr(ProcessingType, self.settings.llm.default_processing_type.upper(), ProcessingType.SUMMARIZE)
-            
-            llm_processing_started_event = LLMProcessingStarted(
-                transcription_id=transcription_id,
-                processing_type=processing_type
-            )
-            logger.debug(f"Created domain event: {llm_processing_started_event}")
-        
-        # First check if we're using the embedded model
-        if self.settings.llm.use_embedded_model and self.embedded_processor:
-            logger.debug(f"Processing text with embedded LLM: {text[:50]}...")
-            
-            try:
-                processing_type = self.settings.llm.default_processing_type
-                
-                if processing_type == "summarize" or processing_type == "custom":
-                    # For embedded processor, we just always use summarize
-                    result = self.embedded_processor.summarize(text)
-                else:
-                    # Default to summarize for embedded processor
-                    result = self.embedded_processor.summarize(text)
-                    
-                if result:
-                    logger.info(f"Embedded LLM processing complete: {result.processing_type}")
-                    self.llm_processing_complete.emit(result)
-                else:
-                    logger.warning("Embedded LLM processing returned no result")
-                    # Try fallback to external API if embedded processing failed
-                    if self.text_processor:
-                        logger.info("Falling back to external API for LLM processing")
-                        self._process_with_external_api(text)
-            except Exception as e:
-                logger.error(f"Error processing text with embedded LLM: {e}")
-                # Try fallback to external API if embedded processing failed
-                if self.text_processor:
-                    logger.info("Falling back to external API for LLM processing after error")
-                    self._process_with_external_api(text)
-            
-            return
-            
-        # If not using embedded model, try external processor
-        if not self.text_processor:
-            logger.warning("LLM processor not initialized")
-            return
-            
-        self._process_with_external_api(text)
-    
-    def _process_with_external_api(self, text: str):
-        """Process text using the external API processor"""
-        try:
-            processing_type = self.settings.llm.default_processing_type
-            
-            if processing_type == "summarize":
-                result = self.text_processor.summarize(text)
-                if result:
-                    logger.info("Text summarization complete")
-                    self.llm_processing_complete.emit(result)
-                else:
-                    logger.warning("Text summarization failed")
-            elif processing_type == "custom" and self.settings.llm.custom_prompt:
-                # Use custom prompt if provided
-                result = self.text_processor.process_with_prompt(
-                    text, 
-                    self.settings.llm.custom_prompt
-                )
-                if result:
-                    logger.info("Custom text processing complete")
-                    self.llm_processing_complete.emit(result)
-                else:
-                    logger.warning("Custom text processing failed")
-            else:
-                # Default to summarize if no valid processing type
-                result = self.text_processor.summarize(text)
-                if result:
-                    logger.info("Default text summarization complete")
-                    self.llm_processing_complete.emit(result)
-                else:
-                    logger.warning("Default text processing failed")
-        except Exception as e:
-            logger.error(f"Error processing text with external LLM API: {e}")
+        # LLM processing is disabled
+        logger.info("LLM processing is disabled - skipping text processing")
+        # Create a no-op result to avoid null errors
+        result = LLMProcessingResult(
+            original_text=text, 
+            processed_text="", 
+            processing_type="none", 
+            model_name="disabled"
+        )
+        self.llm_processing_complete.emit(result)
     
     def shutdown(self):
         """Clean up resources before shutdown"""

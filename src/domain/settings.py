@@ -29,7 +29,7 @@ class LLMSettings:
     default_processing_type: str = "summarize"  # "summarize" or "custom"
     custom_prompt_templates: Dict[str, str] = None
     use_embedded_model: bool = False  # Whether to use the embedded model instead of API
-    embedded_model_name: str = "distilbart-cnn-12-6"  # Default embedded model
+    embedded_model_name: str = "sshleifer/distilbart-cnn-12-6"  # Default embedded model
     
     def __post_init__(self):
         if self.custom_prompt_templates is None:
@@ -43,7 +43,6 @@ class LLMSettings:
 class AppearanceSettings:
     """Settings for application appearance and behavior"""
     show_notifications: bool = True  # Whether to show system tray notifications
-    mute_notifications: bool = True  # Whether to mute notification sounds
     auto_copy_to_clipboard: bool = True  # Whether to automatically copy transcription to clipboard
     auto_paste: bool = True  # Whether to automatically paste transcription to active window
     theme: str = "Light"  # Theme name

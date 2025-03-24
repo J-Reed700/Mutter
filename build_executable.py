@@ -1,5 +1,5 @@
 """
-Build script for the Memo application.
+Build script for the Mutter application.
 This script handles the packaging of the application using PyInstaller.
 """
 import os
@@ -9,10 +9,10 @@ import sys
 from pathlib import Path
 
 # Constants
-APP_NAME = "Memo"
+APP_NAME = "Mutter"
 DIST_DIR = "dist"
 BUILD_DIR = "build"
-SPEC_FILE = "Memo.spec"
+SPEC_FILE = "Mutter.spec"
 HOOKS_DIR = "hooks"
 
 

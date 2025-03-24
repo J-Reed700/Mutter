@@ -13,6 +13,7 @@ from PySide6.QtGui import QIcon
 from .service_manager import ServiceManager
 from ..presentation.system_tray import SystemTrayIcon
 from ..presentation.windows.settings import SettingsDialog, SettingsWindow
+from ..presentation.windows.download_manager import DownloadManagerWindow
 from ..presentation.theme import AppTheme
 
 
@@ -37,7 +38,7 @@ class AppBootstrap:
         # Create Qt application
         self.app = QApplication(sys.argv)
         self.app.setQuitOnLastWindowClosed(False)
-        self.app.setApplicationName("Memo")
+        self.app.setApplicationName("Mutter")
         
         # Apply theme
         AppTheme.apply(self.app)
@@ -54,7 +55,7 @@ class AppBootstrap:
         self.tray = SystemTrayIcon()
         self.tray.show()
         self.tray.show_notification(
-            "Memo",
+            "Mutter",
             "Loading...",
             QSystemTrayIcon.MessageIcon.Information,
             2000
@@ -62,6 +63,7 @@ class AppBootstrap:
         
         # Initialize settings window container
         self.settings_window = None
+        self.download_manager_window = None
         
         try:
             # Initialize service manager
@@ -69,15 +71,21 @@ class AppBootstrap:
             self.service_manager = ServiceManager()
             logger.info("Service manager initialized successfully")
             
+            # Store service manager reference in QApplication for global access
+            self.app.service_manager = self.service_manager
+            
             # Connect signals between components
             self._connect_signals()
             
             # Initialize hotkeys
             self._setup_hotkeys()
             
+            # Connect system tray to service manager
+            self.tray.set_service_manager(self.service_manager)
+            
             # Show ready notification
             self.tray.show_notification(
-                "Memo",
+                "Mutter",
                 "Ready",
                 QSystemTrayIcon.MessageIcon.Information,
                 2000
@@ -89,27 +97,25 @@ class AppBootstrap:
             sys.exit(1)
     
     def _connect_signals(self):
-        """Connect signals between services and UI components."""
+        """Connect signals between components."""
         logger.debug("Connecting signals between components")
         
-        # Get the recording service
         recording_service = self.service_manager.recording_service
         
-        # Connect recording service signals to UI
+        # Recording state signals
         recording_service.recording_started.connect(self.tray.on_recording_started)
         recording_service.recording_stopped.connect(self.tray.on_recording_stopped)
         recording_service.recording_failed.connect(self.tray.on_recording_failed)
         recording_service.transcription_complete.connect(self.tray.on_transcription_complete)
-        recording_service.stop_requested.connect(self.tray.on_stop_hotkey_pressed)
         recording_service.llm_processing_complete.connect(self.tray.on_llm_processing_complete)
         
-        # Connect exit hotkey if available
-        if recording_service.hotkey_handler and hasattr(recording_service.hotkey_handler, 'exit_hotkey_pressed'):
-            logger.debug("Connecting exit hotkey signal")
+        # Exit hotkey signal if available
+        if hasattr(recording_service.hotkey_handler, 'exit_hotkey_pressed'):
             recording_service.hotkey_handler.exit_hotkey_pressed.connect(self._on_exit_hotkey)
         
-        # Connect UI signals to services
-        self.tray.settings_action.triggered.connect(self.show_settings)
+        # Connect stop hotkey if available
+        if hasattr(recording_service.hotkey_handler, 'stop_hotkey_pressed'):
+            recording_service.hotkey_handler.stop_hotkey_pressed.connect(self.tray.on_stop_hotkey_pressed)
     
     def _setup_hotkeys(self):
         """Set up application hotkeys."""
@@ -148,12 +154,55 @@ class AppBootstrap:
         self.settings_window.raise_()
         self.settings_window.activateWindow()
     
+    def show_downloads(self):
+        """Show the downloads window."""
+        logger.debug("Downloads functionality is disabled")
+        
+        # Show a notification that downloads are disabled
+        self.tray.show_notification(
+            "Downloads Disabled",
+            "LLM features have been disabled in this version.",
+            QSystemTrayIcon.MessageIcon.Information,
+            3000
+        )
+        
+        # Uncomment the following code block to enable download manager when needed
+        '''
+        # Create a new window if it doesn't exist or was closed
+        if self.download_manager_window is None or not self.download_manager_window.isVisible():
+            self.download_manager_window = DownloadManagerWindow()
+            
+            # Connect to the download manager
+            if self.service_manager and self.service_manager.download_manager:
+                logger.info("Connecting download manager window to download manager")
+                self.service_manager.download_manager.register_progress_callback(self.download_manager_window)
+                
+                # Populate with any existing downloads
+                downloads = self.service_manager.download_manager.get_downloads()
+                if downloads:
+                    logger.info(f"Found {len(downloads)} existing downloads to display")
+                    for model_name, download_info in downloads.items():
+                        self.download_manager_window.update_download_progress(
+                            model_name,
+                            download_info.get("message", "Download in progress"),
+                            download_info.get("progress", 0.0)
+                        )
+        
+        # Show and activate the window
+        self.download_manager_window.show()
+        self.download_manager_window.raise_()
+        self.download_manager_window.activateWindow()
+        '''
+    
     def _on_settings_saved(self):
         """Handle settings saved event."""
         logger.info("Settings saved, reloading")
         
         # Reload settings in service manager
         self.service_manager.reload_settings()
+        
+        # Update tray with new settings
+        self.tray.update_settings(self.service_manager.settings)
     
     def _on_exit_hotkey(self):
         """Handle exit hotkey press event."""

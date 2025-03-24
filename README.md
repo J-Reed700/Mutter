@@ -1,4 +1,4 @@
-# Memo
+# Mutter
 
 A powerful voice recording application with local speech-to-text transcription. Press a hotkey to start recording, release to transcribe automatically.
 

@@ -4,9 +4,9 @@ from PySide6.QtWidgets import (
     QGroupBox, QFormLayout, QSpinBox, QCheckBox,
     QKeySequenceEdit, QDialog, QSlider, QFrame,
     QApplication, QStyle, QSizePolicy, QMessageBox,
-    QButtonGroup, QRadioButton
+    QButtonGroup, QRadioButton, QScrollArea, QProgressBar
 )
-from PySide6.QtCore import Qt, Slot, Signal
+from PySide6.QtCore import Qt, Slot, Signal, QTimer, QEvent
 from PySide6.QtGui import QKeySequence, QFont, QIcon, QPixmap
 import sounddevice as sd
 import logging
@@ -51,6 +51,17 @@ class SettingsWindow(QMainWindow):
         layout = QVBoxLayout(central_widget)
         layout.setContentsMargins(20, 20, 20, 20)
         
+        # Apply a simpler combo box styling that will be more reliable
+        self.setStyleSheet("""
+            QComboBox {
+                padding: 5px;
+                min-height: 25px;
+            }
+            QComboBox QAbstractItemView {
+                padding: 8px;
+            }
+        """)
+        
         # Header with title and version
         header_layout = QHBoxLayout()
         title_label = QLabel("Memo Settings")
@@ -80,7 +91,7 @@ class SettingsWindow(QMainWindow):
         tabs.addTab(self._create_hotkeys_tab(), "Hotkeys")
         tabs.addTab(self._create_audio_tab(), "Audio")
         tabs.addTab(self._create_transcription_tab(), "Transcription")
-        tabs.addTab(self._create_llm_tab(), "LLM Processing")
+        # tabs.addTab(self._create_llm_tab(), "LLM Processing")
         tabs.addTab(self._create_appearance_tab(), "Appearance")
         
         # Add bottom buttons
@@ -237,10 +248,10 @@ class SettingsWindow(QMainWindow):
             if self.sample_rate_combo.itemData(i) == self.settings.audio.sample_rate:
                 self.sample_rate_combo.setCurrentIndex(i)
                 break
-        else:
-            # If not found, add it
-            self.sample_rate_combo.addItem(f"{self.settings.audio.sample_rate} Hz", self.settings.audio.sample_rate)
-            self.sample_rate_combo.setCurrentIndex(self.sample_rate_combo.count() - 1)
+            else:
+                # If not found, add it
+                self.sample_rate_combo.addItem(f"{self.settings.audio.sample_rate} Hz", self.settings.audio.sample_rate)
+                self.sample_rate_combo.setCurrentIndex(self.sample_rate_combo.count() - 1)
         
         self.sample_rate_combo.currentIndexChanged.connect(self._mark_settings_changed)
         settings_layout.addRow("Sample Rate:", self.sample_rate_combo)
@@ -350,17 +361,41 @@ class SettingsWindow(QMainWindow):
     
     def _create_llm_tab(self) -> QWidget:
         """Create the LLM settings tab"""
+        # Ensure LLM settings are initialized
+        self._ensure_llm_settings_initialized()
+        
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(15)  # Increase spacing between groups
         
         # Help text at the top
         help_label = QLabel(
             "Configure LLM processing for transcriptions. "
             "You can use either the built-in LLM or connect to an external LLM server."
+            "Please note that these are experimental features and may not work as expected."
         )
         help_label.setWordWrap(True)
         layout.addWidget(help_label)
+        
+        # Add a progress bar for model downloading (hidden by default)
+        self.download_group = QGroupBox("Model Download Status")
+        download_layout = QVBoxLayout(self.download_group)
+        download_layout.setContentsMargins(15, 20, 15, 15)
+        download_layout.setSpacing(10)
+        
+        self.download_status_label = QLabel("No download in progress")
+        self.download_status_label.setWordWrap(True)
+        download_layout.addWidget(self.download_status_label)
+        
+        self.download_progress = QProgressBar()
+        self.download_progress.setRange(0, 100)
+        self.download_progress.setValue(0)
+        download_layout.addWidget(self.download_progress)
+        
+        # Add the download group to the layout but hide it initially
+        layout.addWidget(self.download_group)
+        self.download_group.setVisible(False)
         
         # LLM Enable/Disable
         enable_group = QGroupBox("Enable LLM Processing")
@@ -380,7 +415,10 @@ class SettingsWindow(QMainWindow):
         
         layout.addWidget(enable_group)
         
-        # LLM Mode selection (embedded vs external)
+        # --------- LLM Mode selection (embedded vs external) ----------
+        # Changed to use separate groups for clearer organization
+        
+        # Mode selection (radio buttons only)
         mode_group = QGroupBox("LLM Mode")
         mode_layout = QVBoxLayout(mode_group)
         mode_layout.setContentsMargins(15, 20, 15, 15)
@@ -402,61 +440,105 @@ class SettingsWindow(QMainWindow):
         self.llm_mode_group.addButton(self.external_radio)
         
         mode_layout.addWidget(self.embedded_radio)
+        mode_layout.addWidget(self.external_radio)
         
-        # Add embedded model selection
-        embedded_settings = QWidget()
-        embedded_layout = QFormLayout(embedded_settings)
-        embedded_layout.setContentsMargins(20, 5, 5, 5)
+        layout.addWidget(mode_group)
+        
+        # ---------- Embedded Model Settings (separate group) ----------
+        embedded_group = QGroupBox("Built-in Model Settings")
+        embedded_layout = QFormLayout(embedded_group)
+        embedded_layout.setContentsMargins(15, 20, 15, 15)
+        embedded_layout.setSpacing(10)
         
         self.embedded_model_combo = QComboBox()
         self.embedded_model_combo.addItems([
-            "distilbart-cnn-12-6",
+            "facebook/distilbart-cnn-12-6",
             "sshleifer/distilbart-xsum-12-3",
+            "google/flan-t5-small",
             "facebook/bart-large-cnn",
             "philschmid/distilbart-cnn-12-6-samsum"
         ])
         self.embedded_model_combo.setMinimumWidth(300)
         self.embedded_model_combo.setMinimumHeight(30)
+        # Fix dropdown width when shown
+        self.embedded_model_combo.view().setTextElideMode(Qt.ElideNone)
+        self.embedded_model_combo.installEventFilter(self)
+        self.embedded_model_combo.activated.connect(lambda: self._resize_combo_popup(self.embedded_model_combo))
+        
         # Set current embedded model
         if hasattr(self.settings.llm, 'embedded_model_name') and self.settings.llm.embedded_model_name:
             index = self.embedded_model_combo.findText(self.settings.llm.embedded_model_name)
             if index >= 0:
                 self.embedded_model_combo.setCurrentIndex(index)
+            else:
+                # If not found, set the first item
+                self.embedded_model_combo.setCurrentIndex(0)
+        else:
+            # Default to first item if no setting
+            self.embedded_model_combo.setCurrentIndex(0)
         
         self.embedded_model_combo.currentIndexChanged.connect(self._mark_settings_changed)
         
         embedded_layout.addRow("Model:", self.embedded_model_combo)
         
-        embedded_desc = QLabel("Built-in models work immediately without additional setup but use more memory")
+        embedded_desc = QLabel("Built-in models work immediately without additional setup but use more memory.\nT5 models (t5-small, flan-t5-small) are better at handling custom prompts.")
         embedded_desc.setStyleSheet("color: #666666; font-size: 12px;")
         embedded_desc.setWordWrap(True)
         embedded_layout.addRow("", embedded_desc)
         
-        mode_layout.addWidget(embedded_settings)
-        mode_layout.addWidget(self.external_radio)
+        # Add download button for embedded models
+        self.download_model_button = QPushButton("Download Selected Model")
+        self.download_model_button.setToolTip("Download the selected model now instead of waiting for first use")
+        self.download_model_button.clicked.connect(self._download_selected_model)
+        embedded_layout.addRow("", self.download_model_button)
         
-        # Add external server settings
-        server_settings = QWidget()
-        server_layout = QFormLayout(server_settings)
-        server_layout.setContentsMargins(20, 5, 5, 5)
+        layout.addWidget(embedded_group)
+        
+        # ---------- External Server Settings (separate group) ----------
+        external_group = QGroupBox("External LLM Server Settings")
+        external_layout = QFormLayout(external_group)
+        external_layout.setContentsMargins(15, 20, 15, 15)
+        external_layout.setSpacing(10)
         
         self.llm_api_url_edit = QComboBox()
         self.llm_api_url_edit.setEditable(True)
         self.llm_api_url_edit.setMinimumWidth(300)
         self.llm_api_url_edit.setMinimumHeight(30)
+        # Fix dropdown width when shown
+        self.llm_api_url_edit.view().setTextElideMode(Qt.ElideNone)
+        self.llm_api_url_edit.installEventFilter(self)
         self.llm_api_url_edit.addItems([
             "http://localhost:8080/v1",
             "http://localhost:11434/v1",
             "http://localhost:5000/v1",
         ])
-        self.llm_api_url_edit.setCurrentText(self.settings.llm.api_url)
+        
+        # Set the current API URL
+        if hasattr(self.settings.llm, 'api_url') and self.settings.llm.api_url:
+            # First check if it's in the list
+            index = self.llm_api_url_edit.findText(self.settings.llm.api_url)
+            if index >= 0:
+                self.llm_api_url_edit.setCurrentIndex(index)
+            else:
+                # If not found in the list, just set the text directly
+                self.llm_api_url_edit.setCurrentText(self.settings.llm.api_url)
+        else:
+            # Default to first item
+            self.llm_api_url_edit.setCurrentIndex(0)
+        
+        # Connect both signals for editable combo box
         self.llm_api_url_edit.currentTextChanged.connect(self._mark_settings_changed)
-        server_layout.addRow("API URL:", self.llm_api_url_edit)
+        self.llm_api_url_edit.activated.connect(lambda: self._resize_combo_popup(self.llm_api_url_edit))
+        self.llm_api_url_edit.editTextChanged.connect(self._mark_settings_changed)
+        external_layout.addRow("API URL:", self.llm_api_url_edit)
         
         self.llm_model_edit = QComboBox()
         self.llm_model_edit.setEditable(True)
         self.llm_model_edit.setMinimumWidth(300)
         self.llm_model_edit.setMinimumHeight(30)
+        # Fix dropdown width when shown
+        self.llm_model_edit.view().setTextElideMode(Qt.ElideNone)
+        self.llm_model_edit.installEventFilter(self)
         self.llm_model_edit.addItems([
             "llama3",
             "mistral",
@@ -464,27 +546,45 @@ class SettingsWindow(QMainWindow):
             "phi3",
             "mixtral"
         ])
-        self.llm_model_edit.setCurrentText(self.settings.llm.model)
+        
+        # Set the current model
+        if hasattr(self.settings.llm, 'model') and self.settings.llm.model:
+            # First check if it's in the list
+            index = self.llm_model_edit.findText(self.settings.llm.model)
+            if index >= 0:
+                self.llm_model_edit.setCurrentIndex(index)
+            else:
+                # If not found in the list, just set the text directly
+                self.llm_model_edit.setCurrentText(self.settings.llm.model)
+        else:
+            # Default to first item
+            self.llm_model_edit.setCurrentIndex(0)
+        
+        # Connect both signals for editable combo box
         self.llm_model_edit.currentTextChanged.connect(self._mark_settings_changed)
-        server_layout.addRow("Model:", self.llm_model_edit)
+        self.llm_model_edit.activated.connect(lambda: self._resize_combo_popup(self.llm_model_edit))
+        self.llm_model_edit.editTextChanged.connect(self._mark_settings_changed)
+        external_layout.addRow("Model:", self.llm_model_edit)
         
         # Test LLM Connection button
         test_button = QPushButton("Test Connection")
         test_button.setStyleSheet("padding: 5px 10px;")
         test_button.clicked.connect(self._test_llm_connection)
-        server_layout.addRow("", test_button)
+        external_layout.addRow("", test_button)
         
-        mode_layout.addWidget(server_settings)
+        layout.addWidget(external_group)
         
         # Connect signals to enable/disable the appropriate sections
-        self.embedded_radio.toggled.connect(lambda checked: embedded_settings.setEnabled(checked))
+        self.embedded_radio.toggled.connect(lambda checked: embedded_group.setEnabled(checked))
         self.embedded_radio.toggled.connect(self._mark_settings_changed)
-        self.external_radio.toggled.connect(lambda checked: server_settings.setEnabled(checked))
+        self.external_radio.toggled.connect(lambda checked: external_group.setEnabled(checked))
         self.external_radio.toggled.connect(self._mark_settings_changed)
         
-        layout.addWidget(mode_group)
+        # Set initial state based on radio button
+        embedded_group.setEnabled(self.embedded_radio.isChecked())
+        external_group.setEnabled(self.external_radio.isChecked())
         
-        # LLM Processing Settings
+        # ---------- LLM Processing Settings ----------
         processing_group = QGroupBox("Processing Settings")
         processing_layout = QFormLayout(processing_group)
         processing_layout.setContentsMargins(15, 20, 15, 15)
@@ -497,12 +597,23 @@ class SettingsWindow(QMainWindow):
         self.processing_type_combo.addItem("Custom Prompt", "custom")
         self.processing_type_combo.setMinimumWidth(250)
         self.processing_type_combo.setMinimumHeight(30)
+        # Fix dropdown width when shown
+        self.processing_type_combo.view().setTextElideMode(Qt.ElideNone)
+        self.processing_type_combo.installEventFilter(self)
+        self.processing_type_combo.activated.connect(lambda: self._resize_combo_popup(self.processing_type_combo))
         
         # Set current item based on settings
-        for i in range(self.processing_type_combo.count()):
-            if self.processing_type_combo.itemData(i) == self.settings.llm.default_processing_type:
-                self.processing_type_combo.setCurrentIndex(i)
-                break
+        if hasattr(self.settings.llm, 'default_processing_type') and self.settings.llm.default_processing_type:
+            for i in range(self.processing_type_combo.count()):
+                if self.processing_type_combo.itemData(i) == self.settings.llm.default_processing_type:
+                    self.processing_type_combo.setCurrentIndex(i)
+                    break
+            else:
+                # Not found, default to first item
+                self.processing_type_combo.setCurrentIndex(0)
+        else:
+            # Default to first item if no setting
+            self.processing_type_combo.setCurrentIndex(0)
                 
         self.processing_type_combo.currentIndexChanged.connect(self._mark_settings_changed)
         
@@ -514,7 +625,7 @@ class SettingsWindow(QMainWindow):
         processing_layout.addRow("", custom_prompt_desc)
         
         # Note about embedded model limitations
-        embedded_note = QLabel("Note: Built-in models only support summarization and may ignore custom prompts")
+        embedded_note = QLabel("Note: BART/DistilBART models only support summarization, while T5 models better support custom prompts")
         embedded_note.setStyleSheet("color: #666666; font-size: 12px; font-style: italic;")
         embedded_note.setWordWrap(True)
         processing_layout.addRow("", embedded_note)
@@ -523,11 +634,46 @@ class SettingsWindow(QMainWindow):
         
         # Disable the settings if LLM is not enabled
         mode_group.setEnabled(self.settings.llm.enabled)
+        embedded_group.setEnabled(self.settings.llm.enabled and self.embedded_radio.isChecked())
+        external_group.setEnabled(self.settings.llm.enabled and self.external_radio.isChecked())
         processing_group.setEnabled(self.settings.llm.enabled)
         
-        layout.addStretch()
+        # Add scroll area for smaller screens
+        scroll_area = QScrollArea()
+        scroll_area.setWidget(widget)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.NoFrame)
         
-        return widget
+        scroll_widget = QWidget()
+        scroll_layout = QVBoxLayout(scroll_widget)
+        scroll_layout.addWidget(scroll_area)
+        
+        return scroll_widget
+    
+    def _ensure_llm_settings_initialized(self):
+        """Ensure LLM settings are initialized with default values if missing"""
+        if not hasattr(self.settings, 'llm'):
+            from ...domain.settings import LLMSettings
+            self.settings.llm = LLMSettings()
+            
+        # Set default values if not present
+        if not hasattr(self.settings.llm, 'enabled'):
+            self.settings.llm.enabled = False
+            
+        if not hasattr(self.settings.llm, 'use_embedded_model'):
+            self.settings.llm.use_embedded_model = True
+            
+        if not hasattr(self.settings.llm, 'embedded_model_name'):
+            self.settings.llm.embedded_model_name = "google/flan-t5-small"
+            
+        if not hasattr(self.settings.llm, 'api_url'):
+            self.settings.llm.api_url = "http://localhost:8080/v1"
+            
+        if not hasattr(self.settings.llm, 'model'):
+            self.settings.llm.model = "llama3"
+            
+        if not hasattr(self.settings.llm, 'default_processing_type'):
+            self.settings.llm.default_processing_type = "summarize"
     
     def _create_appearance_tab(self) -> QWidget:
         """Create the appearance settings tab"""
@@ -551,10 +697,6 @@ class SettingsWindow(QMainWindow):
         self.show_notif_check.toggled.connect(self._mark_settings_changed)
         notif_layout.addRow("", self.show_notif_check)
         
-        self.mute_notif_check = QCheckBox("Mute notification sounds")
-        self.mute_notif_check.setChecked(self.settings.appearance.mute_notifications if hasattr(self.settings, 'appearance') else True)
-        self.mute_notif_check.toggled.connect(self._mark_settings_changed)
-        notif_layout.addRow("", self.mute_notif_check)
         
         self.clipboard_check = QCheckBox("Auto-copy transcription to clipboard")
         self.clipboard_check.setChecked(self.settings.appearance.auto_copy_to_clipboard if hasattr(self.settings, 'appearance') else True)
@@ -651,7 +793,8 @@ class SettingsWindow(QMainWindow):
         # Disconnect first to avoid multiple connections
         try:
             self.device_combo.currentIndexChanged.disconnect(self._on_device_changed)
-        except:
+        except (TypeError, RuntimeError):
+            # This is fine - signal might not be connected yet
             pass
         self.device_combo.currentIndexChanged.connect(self._on_device_changed)
     
@@ -766,11 +909,31 @@ class SettingsWindow(QMainWindow):
         
         if self.settings.llm.use_embedded_model:
             # Get the embedded model name
-            self.settings.llm.embedded_model_name = self.embedded_model_combo.currentText()
+            model_name = self.embedded_model_combo.currentText()
+            
+            # Ensure model names have proper repository prefix
+            if model_name == "distilbart-cnn-12-6":
+                model_name = "facebook/distilbart-cnn-12-6"
+            
+            self.settings.llm.embedded_model_name = model_name
+            
+            # If the model has been changed, we should show the download progress
+            old_model = getattr(self.settings.llm, 'embedded_model_name', "")
+            if old_model != model_name:
+                self.download_group.setVisible(True)
+                self.download_status_label.setText(f"Model will be downloaded when processing starts: {model_name}")
+                QApplication.processEvents()  # Ensure UI updates
         else:
             # External API settings
-            self.settings.llm.api_url = self.llm_api_url_edit.currentText()
-            self.settings.llm.model = self.llm_model_edit.currentText()
+            # Get text directly from editable combo boxes
+            self.settings.llm.api_url = self.llm_api_url_edit.currentText().strip()
+            self.settings.llm.model = self.llm_model_edit.currentText().strip()
+            
+            # Ensure we have default values if empty
+            if not self.settings.llm.api_url:
+                self.settings.llm.api_url = "http://localhost:8080/v1"
+            if not self.settings.llm.model:
+                self.settings.llm.model = "llama3"
         
         # Processing type (common for both modes)
         self.settings.llm.default_processing_type = self.processing_type_combo.currentData()
@@ -781,7 +944,6 @@ class SettingsWindow(QMainWindow):
             self.settings.appearance = AppearanceSettings()
             
         self.settings.appearance.show_notifications = self.show_notif_check.isChecked()
-        self.settings.appearance.mute_notifications = self.mute_notif_check.isChecked()
         self.settings.appearance.auto_copy_to_clipboard = self.clipboard_check.isChecked()
         self.settings.appearance.auto_paste = self.auto_paste_check.isChecked()
         self.settings.appearance.theme = self.theme_combo.currentText()
@@ -902,6 +1064,130 @@ class SettingsWindow(QMainWindow):
             event.accept()
         else:
             event.ignore()
+
+    def eventFilter(self, obj, event):
+        """Handle events for widgets that have this object as their event filter."""
+        if isinstance(obj, QComboBox):
+            if event.type() == QEvent.Type.MouseButtonPress:
+                # Resize popup when combo box is clicked
+                QTimer.singleShot(10, lambda: self._resize_combo_popup(obj))
+            elif event.type() == QEvent.Type.FocusIn and obj.isEditable():
+                # Also resize when entering an editable combo box
+                QTimer.singleShot(10, lambda: self._resize_combo_popup(obj))
+            elif event.type() == QEvent.Type.Show:
+                # For show events, just resize the combo box popup if it's visible
+                QTimer.singleShot(10, lambda: self._resize_combo_popup(obj))
+                
+        return super().eventFilter(obj, event)
+
+    def _resize_combo_popup(self, combo_box):
+        """Resize the popup for a combobox to show all items properly."""
+        if not combo_box or not hasattr(combo_box, 'view'):
+            return
+            
+        view = combo_box.view()
+        if not view or not view.isVisible():
+            # The popup is not visible, nothing to do
+            return
+            
+        # Calculate content width
+        width = 0
+        fontMetrics = combo_box.fontMetrics()
+        
+        # Check all items to find the widest one
+        for i in range(combo_box.count()):
+            itemText = combo_box.itemText(i)
+            itemWidth = fontMetrics.horizontalAdvance(itemText) + 30  # Add padding
+            width = max(width, itemWidth)
+            
+        # Ensure at least as wide as the combo box itself plus some extra space
+        width = max(width, combo_box.width() + 50)
+        
+        # Set the popup width
+        try:
+            view.setMinimumWidth(width)
+            view.resize(width, view.height())
+            
+            # For editable combo boxes, make sure we can see text being typed
+            if combo_box.isEditable() and hasattr(combo_box, 'lineEdit'):
+                combo_box.lineEdit().setMinimumWidth(width - 30)  # Account for dropdown button
+        except Exception as e:
+            # Log but don't crash if there's an issue resizing
+            logger.debug(f"Failed to resize combo popup: {e}")
+
+    def update_model_download_progress(self, message: str, progress: float):
+        """Update the model download progress display
+        
+        Args:
+            message: Status message to display
+            progress: Progress percentage (0-100) or negative for error
+        """
+        # Ensure the download group is visible
+        self.download_group.setVisible(True)
+        
+        # Update the status message
+        self.download_status_label.setText(message)
+        
+        # Update the progress bar
+        if progress < 0:
+            # Negative value indicates error
+            self.download_progress.setStyleSheet("QProgressBar { color: white; background-color: #ffaaaa; } QProgressBar::chunk { background-color: #ff6666; }")
+            self.download_progress.setFormat("Error")
+            self.download_progress.setValue(0)
+        elif progress >= 100:
+            # Complete
+            self.download_progress.setStyleSheet("QProgressBar { color: white; background-color: #aaffaa; } QProgressBar::chunk { background-color: #66ff66; }")
+            self.download_progress.setFormat("Complete")
+            self.download_progress.setValue(100)
+            
+            # Hide the group after a delay
+            QTimer.singleShot(3000, lambda: self.download_group.setVisible(False))
+        else:
+            # In progress
+            self.download_progress.setStyleSheet("")
+            self.download_progress.setFormat("%p%")
+            self.download_progress.setValue(int(progress))
+        
+        # Process events to ensure UI updates
+        QApplication.processEvents()
+
+    def _download_selected_model(self):
+        """Pre-download the selected embedded model"""
+        from ...infrastructure.llm.embedded_processor import EmbeddedTextProcessor
+        
+        model_name = self.embedded_model_combo.currentText()
+        
+        # Show the download status UI
+        self.download_group.setVisible(True)
+        self.download_status_label.setText(f"Initializing download for model: {model_name}")
+        self.download_progress.setValue(0)
+        QApplication.processEvents()
+        
+        try:
+            # Create an embedded processor instance just for downloading
+            # We can't reuse existing ones from ServiceManager because we want immediate update
+            processor = EmbeddedTextProcessor(
+                model_name=model_name,
+                progress_callback=self.update_model_download_progress
+            )
+            
+            # Show a message that download has started
+            QMessageBox.information(
+                self,
+                "Download Started",
+                f"Download of model {model_name} has been started. Progress will be shown in the settings window.",
+                QMessageBox.Ok
+            )
+        except Exception as e:
+            # Show error message
+            QMessageBox.critical(
+                self,
+                "Download Error",
+                f"Failed to start model download: {str(e)}",
+                QMessageBox.Ok
+            )
+            # Update progress display to show error
+            self.update_model_download_progress(f"Error starting download: {str(e)}", -1)
 
 class SettingsDialog(QDialog):
     hotkey_changed = Signal(object)  # Emits QKeySequence

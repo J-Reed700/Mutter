@@ -1,5 +1,5 @@
 import logging
-from typing import Optional, List
+from typing import Optional, List, Callable
 from dataclasses import dataclass
 import threading
 import os
@@ -20,6 +20,7 @@ AutoModelForSeq2SeqLM = None
 AutoModelForCausalLM = None
 pipeline = None
 BitsAndBytesConfig = None
+HfHubHTTPError = None
 
 # Try to import PyTorch and transformers, but don't fail if they're not available
 try:
@@ -27,6 +28,8 @@ try:
     TORCH_AVAILABLE = True
     try:
         from transformers import pipeline, AutoModelForSeq2SeqLM, AutoTokenizer, AutoModelForCausalLM
+        # Also import HfHubHTTPError for error handling
+        from transformers.utils.hub import HfHubHTTPError
         # Also import BitsAndBytesConfig for 8-bit quantization
         try:
             from transformers import BitsAndBytesConfig
@@ -41,8 +44,24 @@ except ImportError:
 class EmbeddedTextProcessor:
     """Process text using lightweight models embedded directly in the application"""
     
-    def __init__(self, model_name: str = "sshleifer/distilbart-xsum-12-3"):
-        """Initialize the embedded text processor with the specified model name"""
+    def __init__(self, model_name: str = "sshleifer/distilbart-xsum-12-3", progress_callback: Callable[[str, float], None] = None):
+        """Initialize the embedded text processor with the specified model name
+        
+        Args:
+            model_name: Name of the model to load
+            progress_callback: Optional callback to report download progress (message, progress_percentage)
+        """
+        # Fix model name formats that don't include the repository
+        model_name_mapping = {
+            "distilbart-cnn-12-6": "facebook/distilbart-cnn-12-6",
+            "bart-large-cnn": "facebook/bart-large-cnn",
+            "distilbart-xsum-12-3": "sshleifer/distilbart-xsum-12-3"
+        }
+        
+        if model_name in model_name_mapping:
+            logger.info(f"Updating model name from {model_name} to {model_name_mapping[model_name]}")
+            model_name = model_name_mapping[model_name]
+            
         self.model_name = model_name
         self.model = None
         self.tokenizer = None
@@ -51,6 +70,7 @@ class EmbeddedTextProcessor:
         self.min_length = 40
         self._loading_lock = threading.Lock()
         self._is_loading = False
+        self._progress_callback = progress_callback
         
         # Set up a custom cache directory in the user's home folder
         # This ensures models are cached between runs and not re-downloaded each time
@@ -84,6 +104,10 @@ class EmbeddedTextProcessor:
         with self._loading_lock:
             self._is_loading = True
             
+        # Call the progress callback with initial message
+        if self._progress_callback:
+            self._progress_callback(f"Preparing to download model: {self.model_name}", 0.0)
+            
         thread = threading.Thread(target=self._load_model)
         thread.daemon = True
         thread.start()
@@ -108,10 +132,16 @@ class EmbeddedTextProcessor:
             
             if os.path.exists(model_dir):
                 logger.info(f"Found existing LLM model at {model_dir}")
+                if self._progress_callback:
+                    self._progress_callback(f"Found cached model: {self.model_name}", 10.0)
             else:
                 logger.info(f"LLM model not found locally, will download to {model_cache_dir}")
+                if self._progress_callback:
+                    self._progress_callback(f"Downloading model: {self.model_name}", 5.0)
             
             logger.info(f"Loading embedded LLM model: {self.model_name}")
+            if self._progress_callback:
+                self._progress_callback(f"Loading model: {self.model_name}", 15.0)
             
             # Try to use CUDA first if we requested a model that requires it
             use_cuda = torch.cuda.is_available()
@@ -120,55 +150,145 @@ class EmbeddedTextProcessor:
             if not use_cuda:
                 logger.info("CUDA not available, using CPU for embedded model")
             
-            # For summarization
-            if "bart" in self.model_name.lower() or "t5" in self.model_name.lower():
-                # These models can be CPU-only if needed
-                self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-                self.model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name)
-                self.model.to(device)
+            # Setup a progress handler for transformers to report download progress
+            if self._progress_callback:
+                # We need to patch the transformers download manager to report progress
+                from transformers.utils.hub import custom_hf_download_progress_bar
+                from tqdm import tqdm
                 
-            # For general text generation
-            else:
-                # LLMs often need GPU
-                try:
+                # Clear any existing callbacks
+                if hasattr(custom_hf_download_progress_bar, '_callbacks'):
+                    custom_hf_download_progress_bar._callbacks = []
+                    
+                # Original tqdm update method
+                original_update = tqdm.update
+                download_size = 0
+
+                def progress_updater(current_size, total_size):
+                    """Update progress based on download size"""
+                    nonlocal download_size
+                    download_size = total_size
+                    
+                    if total_size > 0:
+                        # Scale to 15-80% range (reserve beginning and end for other operations)
+                        progress_percent = 15.0 + (current_size / total_size) * 65.0
+                        model_name = self.model_name
+                        self._progress_callback(
+                            f"Downloading model files: {current_size/1024/1024:.1f}/{total_size/1024/1024:.1f} MB",
+                            progress_percent
+                        )
+                        # Ensure regular logging for debugging
+                        logger.debug(f"Download progress: {current_size/1024/1024:.1f}/{total_size/1024/1024:.1f} MB ({progress_percent:.1f}%)")
+
+                # Set a custom callback for the progress bar
+                custom_hf_download_progress_bar.set_callback(progress_updater)
+                
+                logger.debug(f"Registered download progress callback for model: {self.model_name}")
+            
+            # For summarization
+            try:
+                if "bart" in self.model_name.lower() or "t5" in self.model_name.lower():
+                    # These models can be CPU-only if needed
+                    if self._progress_callback:
+                        self._progress_callback(f"Downloading tokenizer for {self.model_name}", 20.0)
                     self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-                    self.model = AutoModelForCausalLM.from_pretrained(self.model_name)
+                    
+                    if self._progress_callback:
+                        self._progress_callback(f"Downloading model weights for {self.model_name}", 30.0)
+                    self.model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name)
+                    
+                    if self._progress_callback:
+                        self._progress_callback(f"Loading model to {device}", 80.0)
                     self.model.to(device)
-                except Exception as e:
-                    if "CUDA" in str(e) or "cudnn" in str(e) or "GPU" in str(e):
-                        logger.warning(f"Failed to load model with GPU acceleration: {e}")
-                        logger.info("Trying to load model in CPU-only mode with reduced precision")
+                    
+                # For general text generation
+                else:
+                    # LLMs often need GPU
+                    try:
+                        if self._progress_callback:
+                            self._progress_callback(f"Downloading tokenizer for {self.model_name}", 20.0)
+                        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
                         
-                        # If BitsAndBytesConfig isn't already imported, try to import it now
-                        if BitsAndBytesConfig is None:
-                            try:
-                                from transformers import BitsAndBytesConfig
-                            except ImportError:
-                                logger.error("BitsAndBytesConfig not available, cannot load model in reduced precision mode")
-                                raise
+                        if self._progress_callback:
+                            self._progress_callback(f"Downloading model weights for {self.model_name}", 30.0)
+                        self.model = AutoModelForCausalLM.from_pretrained(self.model_name)
                         
-                        # Create quantization config if BitsAndBytesConfig is available
-                        if BitsAndBytesConfig is not None:
-                            quantization_config = BitsAndBytesConfig(
-                                load_in_8bit=True,
-                                llm_int8_enable_fp32_cpu_offload=True
-                            )
+                        if self._progress_callback:
+                            self._progress_callback(f"Loading model to {device}", 80.0)
+                        self.model.to(device)
+                    except Exception as e:
+                        if "CUDA" in str(e) or "cudnn" in str(e) or "GPU" in str(e):
+                            logger.warning(f"Failed to load model with GPU acceleration: {e}")
+                            logger.info("Trying to load model in CPU-only mode with reduced precision")
                             
-                            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-                            self.model = AutoModelForCausalLM.from_pretrained(
-                                self.model_name,
-                                device_map="auto",
-                                quantization_config=quantization_config
-                            )
+                            if self._progress_callback:
+                                self._progress_callback(f"Falling back to CPU with reduced precision", 40.0)
+                            
+                            # If BitsAndBytesConfig isn't already imported, try to import it now
+                            if BitsAndBytesConfig is None:
+                                try:
+                                    from transformers import BitsAndBytesConfig
+                                except ImportError:
+                                    logger.error("BitsAndBytesConfig not available, cannot load model in reduced precision mode")
+                                    raise
+                            
+                            # Create quantization config if BitsAndBytesConfig is available
+                            if BitsAndBytesConfig is not None:
+                                quantization_config = BitsAndBytesConfig(
+                                    load_in_8bit=True,
+                                    llm_int8_enable_fp32_cpu_offload=True
+                                )
+                                
+                                if self._progress_callback:
+                                    self._progress_callback(f"Downloading tokenizer for {self.model_name}", 45.0)
+                                self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+                                
+                                if self._progress_callback:
+                                    self._progress_callback(f"Downloading quantized model for {self.model_name}", 50.0)
+                                self.model = AutoModelForCausalLM.from_pretrained(
+                                    self.model_name,
+                                    device_map="auto",
+                                    quantization_config=quantization_config
+                                )
+                            else:
+                                raise
                         else:
                             raise
-                    else:
-                        raise
-            
-            self.available = True
-            logger.info(f"Successfully loaded embedded LLM model: {self.model_name}")
+                        
+                self.available = True
+                if self._progress_callback:
+                    self._progress_callback(f"Model {self.model_name} loaded successfully", 100.0)
+                logger.info(f"Successfully loaded embedded LLM model: {self.model_name}")
+                
+            except HfHubHTTPError as http_error:
+                # Handle common HTTP errors like timeouts
+                if "timed out" in str(http_error).lower() or "timeout" in str(http_error).lower():
+                    error_msg = f"Download timed out. Please check your internet connection and try again."
+                    logger.error(f"HTTP timeout error: {http_error}")
+                    if self._progress_callback:
+                        self._progress_callback(error_msg, -1.0)
+                elif "rate limit" in str(http_error).lower():
+                    error_msg = f"Rate limited by Hugging Face. Please try again later."
+                    logger.error(f"Rate limit error: {http_error}")
+                    if self._progress_callback:
+                        self._progress_callback(error_msg, -1.0)
+                else:
+                    error_msg = f"Error downloading model: {http_error}"
+                    logger.error(f"HTTP error downloading model: {http_error}")
+                    if self._progress_callback:
+                        self._progress_callback(error_msg, -1.0)
+                self.available = False
+                
+            except Exception as e:
+                logger.error(f"Failed to load embedded LLM model: {e}")
+                if self._progress_callback:
+                    self._progress_callback(f"Error loading model: {str(e)}", -1.0)
+                self.available = False
+                
         except Exception as e:
             logger.error(f"Failed to load embedded LLM model: {e}")
+            if self._progress_callback:
+                self._progress_callback(f"Error loading model: {str(e)}", -1.0)  # Use negative to indicate error
             self.available = False
         finally:
             with self._loading_lock:
@@ -181,7 +301,7 @@ class EmbeddedTextProcessor:
             return []
             
         return [
-            "distilbart-cnn-12-6",           # Small summarization model
+            "sshleifer/distilbart-cnn-12-6",           # Small summarization model
             "facebook/bart-large-cnn",       # Better quality but larger
             "sshleifer/distilbart-xsum-12-3", # Very small model
             "philschmid/distilbart-cnn-12-6-samsum" # Good for conversation summarization

@@ -32,7 +32,7 @@ def build_executable(include_llm=False):
     # Base PyInstaller command
     cmd = [
         'pyinstaller',
-        f'--name=Memo{suffix}',
+        f'--name=Mutter{suffix}',
         '--windowed',  # No console window
         '--onefile',   # Single executable file
         '--clean',     # Clean PyInstaller cache
@@ -49,7 +49,7 @@ def build_executable(include_llm=False):
         # Add macOS-specific options
         cmd.append('--icon=resources/icons/app.icns')
         # Add Info.plist
-        cmd.append('--osx-bundle-identifier=com.yourcompany.Memo')
+        cmd.append('--osx-bundle-identifier=com.yourcompany.Mutter')
     
     # Add the main script
     cmd.append('src/main.py')
@@ -93,16 +93,16 @@ def create_dmg(suffix=""):
         # Create DMG
         subprocess.run([
             'create-dmg',
-            '--volname', f'Memo{suffix}',
+            '--volname', f'Mutter{suffix}',
             '--volicon', 'resources/icons/app.icns',
             '--window-pos', '200', '120',
             '--window-size', '800', '400',
             '--icon-size', '100',
-            '--icon', f'Memo{suffix}.app', '200', '200',
-            '--hide-extension', f'Memo{suffix}.app',
+            '--icon', f'Mutter{suffix}.app', '200', '200',
+            '--hide-extension', f'Mutter{suffix}.app',
             '--app-drop-link', '600', '200',
-            f'dist/Memo{suffix}.dmg',
-            f'dist/Memo{suffix}.app'
+            f'dist/Mutter{suffix}.dmg',
+            f'dist/Mutter{suffix}.app'
         ])
         print("DMG created successfully!")
     except subprocess.CalledProcessError:
@@ -112,7 +112,7 @@ def create_dmg(suffix=""):
 
 if __name__ == "__main__":
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Build Memo executable')
+    parser = argparse.ArgumentParser(description='Build Mutter executable')
     parser.add_argument('--with-llm', action='store_true', 
                       help='Include LLM dependencies (torch, transformers)')
     args = parser.parse_args()

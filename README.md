@@ -35,10 +35,12 @@ A powerful voice recording application with local speech-to-text transcription. 
 
 3. Install the dependencies using Poetry:
 
-   # Optional: Lock the dependencies
+Optional: Lock the dependencies
+
    ```
    python -m poetry lock
    ```
+
    ```
    # For basic functionality (without local LLM processing)
    python -m poetry install
@@ -51,23 +53,6 @@ A powerful voice recording application with local speech-to-text transcription. 
    ```
    python -m poetry shell
    ```
-
-### Optional LLM Processing
-
-The application supports two modes for LLM processing:
-
-1. **External API Mode** (Default, no extra dependencies): 
-   - Uses a local LLM API server (like Ollama) at http://localhost:8080/v1
-   - Requires you to run an LLM server separately
-
-2. **Embedded Mode** (Requires additional dependencies):
-   - Uses PyTorch and Transformers libraries to run models directly in the app
-   - Requires more system resources (especially for larger models)
-   - Install with `python -m poetry install --extras llm` or manually install torch/transformers
-
-If you're using the application on multiple machines:
-- For your main/powerful machine: Install with LLM extras for full functionality
-- For secondary/less powerful machines: Install only the basic dependencies and use External API mode
 
 ## Usage
 
@@ -90,21 +75,11 @@ If you're using the application on multiple machines:
 
 8. You can press `Ctrl+Shift+Q` to quit the application.
 
-### LLM Processing, Added in future updates
-
-1. To use LLM processing, you need to have an LLM server running.
-
-2. The default server is Ollama, but you can use any other LLM server that supports the API.
-
-3. You can configure the server in the settings.
-
-4. You can also use the `python -m poetry install --extras llm` command to install the LLM dependencies and run the application with embedded LLM processing.
-
 
 ## Configuration
 
 - Click on the system tray icon and select "Settings" to configure:
-  - Hotkeys
+  - Hotkeys, (Ctrl+Shift+R to start/stop recording, Ctrl+Shift+Q to quit)
   - Audio settings
   - Transcription model (larger models are more accurate)
   - Language settings

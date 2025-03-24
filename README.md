@@ -63,15 +63,11 @@ A powerful voice recording application with local speech-to-text transcription. 
 
 3. Press `Ctrl+Shift+R` (default hotkey) to start recording.
 
-4. Release the hotkey to stop recording and start transcription.
+4. Press `Ctrl+Shift+R` again to stop recording and start transcription.
 
-5. The transcription will appear in a notification and can be copied to clipboard.
+5. The transcription will appear in a notification and can be copied to clipboard. As well as pasted into your favorite text editor or chat application.
 
-6. Press `Ctrl+Shift+R` again to start recording again.
-
-7. You can now paste the transcription into your favorite text editor or chat application.
-
-8. You can press `Ctrl+Shift+Q` to quit the application.
+6. You can press `Ctrl+Shift+Q` to quit the application.
 
 
 ## Configuration

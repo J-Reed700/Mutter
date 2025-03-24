@@ -44,11 +44,7 @@ A powerful voice recording application with local speech-to-text transcription. 
    ```
 
    ```
-   # For basic functionality (without local LLM processing)
    python -m poetry install
-   
-   # To include local LLM processing capabilities (requires more resources)
-   python -m poetry install --extras llm
    ```
 
 5. Activate the virtual environment created by Poetry:

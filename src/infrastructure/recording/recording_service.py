@@ -5,6 +5,7 @@ from datetime import datetime
 from uuid import uuid4
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QKeySequence
+import platform
 
 # Domain imports
 from ...domain.settings import Settings
@@ -267,18 +268,23 @@ class RecordingService(QObject):
     
     def _on_hotkey_pressed(self):
         """Handle hotkey press event"""
-        logger.debug("Hotkey pressed, starting recording")
-        self.start_recording()
+        if not self.is_recording:
+            logger.debug("Hotkey pressed, starting recording")
+            self.start_recording()
+        else:
+            logger.debug("Hotkey pressed while recording, stopping recording")
+            self.stop_recording()
     
     def _on_hotkey_released(self):
-        """Handle hotkey release event"""
-        logger.debug("Hotkey released, stopping recording - emitting stop_requested signal first")
-        
-        # Emit signal to show toast notification before any processing begins
-        self.stop_requested.emit()
-        
-        # Now stop the recording
-        self.stop_recording()
+        """Handle hotkey release event - no longer used for stopping recording"""
+        if platform.system() == 'Linux':
+            return
+        elif platform.system() == 'Windows':
+            logger.debug("Hotkey released, stopping recording")
+            self.stop_requested.emit()
+            self.stop_recording()
+        else:
+            pass
     
     def _delete_recording_file(self, file_path: Path):
         """Delete the recording file after it's been transcribed.
@@ -493,7 +499,6 @@ class RecordingService(QObject):
     
     def _create_hotkey_handler(self):
         """Create the appropriate hotkey handler for the current platform"""
-        import platform
         system = platform.system()
         
         if system == 'Windows':
@@ -504,9 +509,8 @@ class RecordingService(QObject):
             logger.warning("macOS hotkey handler not implemented")
             return None
         elif system == 'Linux':
-            # Future implementation
-            logger.warning("Linux hotkey handler not implemented")
-            return None
+            from ..hotkeys.linux import LinuxHotkeyHandler
+            return LinuxHotkeyHandler()
         else:
             logger.warning(f"Unsupported platform: {system}")
             return None

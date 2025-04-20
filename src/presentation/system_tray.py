@@ -6,6 +6,7 @@ from pathlib import Path
 from .toast.custom_toast import CustomToast
 import logging
 import platform
+import os
 
 from .windows.settings import SettingsWindow
 from .windows.download_manager import DownloadManagerWindow
@@ -17,6 +18,22 @@ class SystemTrayIcon(QSystemTrayIcon):
     def __init__(self, parent: QWidget = None):
         super().__init__(parent)
         
+        # Set up Linux-specific configuration
+        if platform.system() == 'Linux':
+            try:
+                # Force use of XCB platform
+                os.environ['QT_QPA_PLATFORM'] = 'xcb'
+                # Disable D-Bus usage for system tray
+                os.environ['QT_NO_DBUS'] = '1'
+                # Set up fallback icon theme path
+                QIcon.setThemeName('Adwaita')
+                QIcon.setThemeSearchPaths(['/usr/share/icons'])
+                # Set a custom property to mark this as initialized
+                self.setProperty("initialized", True)
+                logger.debug("Linux-specific configuration applied")
+            except Exception as e:
+                logger.warning(f"Failed to set up Linux configuration: {e}")
+
         # Settings for notifications (defaults)
         self.show_notifications = False
         self.auto_paste = True  # Enable auto-paste by default
@@ -107,15 +124,6 @@ class SystemTrayIcon(QSystemTrayIcon):
         self.recent_transcription_action.setFont(italic_font)
         self.menu.addAction(self.recent_transcription_action)
         
-        # Add recent LLM processed text action
-        #   self.recent_llm_action = QAction("No LLM processed text")
-        #   self.recent_llm_action.setEnabled(False)
-        #   llm_font = QFont()
-        #   llm_font.setPointSize(9)
-        #   llm_font.setItalic(True)
-        #   self.recent_llm_action.setFont(llm_font)
-        #   self.menu.addAction(self.recent_llm_action)
-        
         # Add copy to clipboard action with icon
         self.copy_action = QAction("Copy to Clipboard")
         self.copy_action.setEnabled(False)
@@ -125,14 +133,6 @@ class SystemTrayIcon(QSystemTrayIcon):
         if not clipboard_icon.isNull():
             self.copy_action.setIcon(clipboard_icon)
         self.menu.addAction(self.copy_action)
-        
-        # Add copy LLM result to clipboard action
-        #   self.copy_llm_action = QAction("Copy LLM Result to Clipboard")
-        #   self.copy_llm_action.setEnabled(False)
-        #   self.copy_llm_action.triggered.connect(self.copy_llm_to_clipboard)
-        #   if not clipboard_icon.isNull():
-        #       self.copy_llm_action.setIcon(clipboard_icon)
-        #   self.menu.addAction(self.copy_llm_action)
         
         self.menu.addSeparator()
         
@@ -144,13 +144,6 @@ class SystemTrayIcon(QSystemTrayIcon):
         if not settings_icon.isNull():
             self.settings_action.setIcon(settings_icon)
         self.menu.addAction(self.settings_action)
-        
-        # Add downloads action with icon
-        # self.downloads_action = QAction("Downloads")
-        # self.downloads_action.triggered.connect(self.show_downloads)
-        # if not settings_icon.isNull():
-        #     self.downloads_action.setIcon(settings_icon)
-        # self.menu.addAction(self.downloads_action)
         
         # Add quit action with icon
         quit_action = QAction("Quit")
@@ -525,7 +518,12 @@ class SystemTrayIcon(QSystemTrayIcon):
         clipboard = QApplication.clipboard()
         clipboard.setText(self.last_transcription)
         logger.debug("Copied transcription to clipboard")
-    
+        
+        # For Linux, also set the selection clipboard
+        if platform.system() == 'Linux':
+            clipboard.setText(self.last_transcription, QClipboard.Selection)
+            logger.debug("Also copied to selection clipboard on Linux")
+
     def copy_llm_to_clipboard(self):
         """Copy the last LLM processed text to clipboard"""
         if not self.last_llm_result:
@@ -1050,8 +1048,41 @@ class SystemTrayIcon(QSystemTrayIcon):
                 logger.warning("Auto-paste for macOS not implemented yet")
                 
             elif platform.system() == 'Linux':
-                # Future implementation
-                logger.warning("Auto-paste for Linux not implemented yet")
+                # Use xdotool to simulate Ctrl+V keystroke
+                import subprocess
+                import time
+                
+                # Ensure clipboard content is updated
+                # We'll force a synchronization by using xsel
+                try:
+                    # First, ensure we have the latest transcript in both clipboards
+                    if self.last_transcription:
+                        # Re-copy to clipboard to ensure it's fresh
+                        clipboard = QApplication.clipboard()
+                        clipboard.setText(self.last_transcription)
+                        # Also set the X11 primary selection
+                        clipboard.setText(self.last_transcription, QClipboard.Selection)
+                        logger.debug("Re-copied content to both clipboards for paste operation")
+                        
+                        # Use xsel to ensure the clipboard content is synchronized
+                        try:
+                            # Copy our content to X clipboard using xsel
+                            process = subprocess.Popen(['xsel', '-b', '-i'], stdin=subprocess.PIPE)
+                            process.communicate(input=self.last_transcription.encode())
+                            logger.debug("Synchronized clipboard content with xsel")
+                        except (subprocess.SubprocessError, FileNotFoundError):
+                            logger.warning("xsel not found, using Qt clipboard only")
+                
+                    # Give a larger delay for UI and clipboard to stabilize
+                    time.sleep(1.0)
+                    
+                    # Simulate Ctrl+V using xdotool
+                    subprocess.run(['xdotool', 'key', 'ctrl+v'], check=True)
+                    logger.debug("Auto-paste keystrokes sent via xdotool")
+                except subprocess.CalledProcessError as e:
+                    logger.error(f"Failed to send keystrokes via xdotool: {e}")
+                except FileNotFoundError:
+                    logger.error("xdotool not found. Please install it to enable auto-paste functionality.")
                 
         except Exception as e:
             logger.error(f"Error in auto-paste: {e}", exc_info=True)
@@ -1073,4 +1104,24 @@ class SystemTrayIcon(QSystemTrayIcon):
             # Explicitly re-register hotkeys after settings are reloaded
             if hasattr(self.service_manager.recording_service, '_register_hotkeys'):
                 logger.info("Re-registering hotkeys after settings saved")
-                self.service_manager.recording_service._register_hotkeys() 
+                self.service_manager.recording_service._register_hotkeys()
+
+    def show(self):
+        """Override show method to handle D-Bus errors on Linux"""
+        try:
+            # Try the normal show method
+            super().show()
+            logger.debug("System tray icon shown successfully")
+        except Exception as e:
+            logger.error(f"Error showing system tray icon: {e}")
+            if "QDBusError" in str(e) and platform.system() == 'Linux':
+                # Try to reinitialize with XCB platform
+                try:
+                    os.environ['QT_QPA_PLATFORM'] = 'xcb'
+                    super().show()
+                    logger.debug("System tray icon shown successfully with XCB platform")
+                except Exception as e2:
+                    logger.warning(f"D-Bus error detected and XCB fallback failed: {e2}")
+                    logger.info("Application will continue working but tray icon may not be visible")
+                    # The application can still work even if the tray icon isn't visible
+                    # Users can still use hotkeys to control the application 

@@ -6,6 +6,8 @@ import logging
 import sys
 from pathlib import Path
 import traceback
+import platform
+import os
 
 from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 from PySide6.QtGui import QIcon
@@ -35,6 +37,20 @@ class AppBootstrap:
     
     def __init__(self):
         """Initialize the application bootstrap."""
+        # Set up Linux-specific configuration before creating QApplication
+        if platform.system() == 'Linux':
+            try:
+                # Force use of XCB platform
+                os.environ['QT_QPA_PLATFORM'] = 'xcb'
+                # Disable D-Bus usage for system tray
+                os.environ['QT_NO_DBUS'] = '1'
+                # Set up icon theme paths
+                QIcon.setThemeName('Adwaita')
+                QIcon.setThemeSearchPaths(['/usr/share/icons'])
+                logger.debug("Linux-specific configuration applied")
+            except Exception as e:
+                logger.warning(f"Failed to set up Linux configuration: {e}")
+
         # Create Qt application
         self.app = QApplication(sys.argv)
         self.app.setQuitOnLastWindowClosed(False)
@@ -53,13 +69,29 @@ class AppBootstrap:
         
         # Initialize UI first to show loading message
         self.tray = SystemTrayIcon()
-        self.tray.show()
-        self.tray.show_notification(
-            "Mutter",
-            "Loading...",
-            QSystemTrayIcon.MessageIcon.Information,
-            2000
-        )
+        try:
+            # Try to show the tray icon
+            self.tray.show()
+            # Try to show notification if tray icon is visible
+            self.tray.show_notification(
+                "Mutter",
+                "Loading...",
+                QSystemTrayIcon.MessageIcon.Information,
+                2000
+            )
+        except Exception as e:
+            logger.warning(f"Error showing system tray icon: {e}")
+            if platform.system() == 'Linux':
+                # Try to reinitialize with XCB platform
+                try:
+                    os.environ['QT_QPA_PLATFORM'] = 'xcb'
+                    self.tray = SystemTrayIcon()
+                    self.tray.show()
+                    logger.debug("System tray icon shown successfully with XCB platform")
+                except Exception as e2:
+                    logger.warning(f"Failed to show system tray icon with XCB platform: {e2}")
+            logger.info("Application will continue with limited UI functionality")
+            # Continue without the tray icon - hotkeys will still work
         
         # Initialize settings window container
         self.settings_window = None
@@ -84,12 +116,16 @@ class AppBootstrap:
             self.tray.set_service_manager(self.service_manager)
             
             # Show ready notification
-            self.tray.show_notification(
-                "Mutter",
-                "Ready",
-                QSystemTrayIcon.MessageIcon.Information,
-                2000
-            )
+            try:
+                self.tray.show_notification(
+                    "Mutter",
+                    "Ready",
+                    QSystemTrayIcon.MessageIcon.Information,
+                    2000
+                )
+            except Exception as e:
+                logger.warning(f"Error showing ready notification: {e}")
+                # Continue without the notification
             
         except Exception as e:
             logger.critical(f"Failed to initialize application: {e}", exc_info=True)

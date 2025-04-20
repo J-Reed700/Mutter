@@ -13,7 +13,7 @@ from ..domain.settings import Settings, LLMSettings
 from ..infrastructure.persistence.settings_repository import SettingsRepository
 from ..infrastructure.audio.recorder import AudioRecorder
 from ..infrastructure.transcription.transcriber import Transcriber
-from ..infrastructure.llm.processor import TextProcessor, LLMProcessingResult
+from ..infrastructure.llm.processor import TextProcessor
 from ..infrastructure.llm.embedded_processor import EmbeddedTextProcessor
 from ..infrastructure.llm.download_manager import DownloadManager
 from ..infrastructure.recording.recording_service import RecordingService
@@ -93,14 +93,6 @@ class ServiceManager(QObject):
             device=self._settings.transcription.device,
             compute_type="int8"
         )
-        
-        # Disable LLM processors completely
-        # Uncomment the following code if you want to re-enable LLM functionality later
-        '''
-        # Initialize LLM processors if enabled
-        if self._settings.llm.enabled:
-            self._initialize_llm_processors()
-        '''
         
         # Set LLM settings to disabled
         if hasattr(self._settings, 'llm'):

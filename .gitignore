@@ -1,11 +1,8 @@
 .venv/
 build/
 
-dist/*
-!dist/Mutter/
-dist/Mutter/*
-!dist/Mutter/Mutter.exe
-!dist/Mutter/README.txt
+dist/
+
 
 recordings/
 __pycache__/

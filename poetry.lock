@@ -451,6 +451,18 @@ files = [
 ]
 
 [[package]]
+name = "evdev"
+version = "1.9.1"
+description = "Bindings to the Linux input handling subsystem"
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+markers = "\"linux\" in sys_platform"
+files = [
+    {file = "evdev-1.9.1.tar.gz", hash = "sha256:dc640a064cb1c9fe1f8b970dc2039945a2a275d7b7ee62284bf427238abe45ee"},
+]
+
+[[package]]
 name = "exceptiongroup"
 version = "1.2.2"
 description = "Backport of PEP 654 (exception groups)"
@@ -679,7 +691,7 @@ colors = ["colorama (>=0.4.6)"]
 name = "jinja2"
 version = "3.1.6"
 description = "A very fast and expressive template engine."
-optional = true
+optional = false
 python-versions = ">=3.7"
 groups = ["main"]
 markers = "extra == \"llm\""
@@ -714,7 +726,7 @@ altgraph = ">=0.17"
 name = "markupsafe"
 version = "3.0.2"
 description = "Safely add untrusted strings to HTML/XML markup."
-optional = true
+optional = false
 python-versions = ">=3.9"
 groups = ["main"]
 markers = "extra == \"llm\""
@@ -870,7 +882,7 @@ files = [
 name = "networkx"
 version = "3.2.1"
 description = "Python package for creating and manipulating graphs and networks"
-optional = true
+optional = false
 python-versions = ">=3.9"
 groups = ["main"]
 markers = "extra == \"llm\""
@@ -936,7 +948,7 @@ files = [
 name = "nvidia-cublas-cu12"
 version = "12.4.5.8"
 description = "CUBLAS native runtime libraries"
-optional = true
+optional = false
 python-versions = ">=3"
 groups = ["main"]
 markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\" and extra == \"llm\""
@@ -950,7 +962,7 @@ files = [
 name = "nvidia-cuda-cupti-cu12"
 version = "12.4.127"
 description = "CUDA profiling tools runtime libs."
-optional = true
+optional = false
 python-versions = ">=3"
 groups = ["main"]
 markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\" and extra == \"llm\""
@@ -964,7 +976,7 @@ files = [
 name = "nvidia-cuda-nvrtc-cu12"
 version = "12.4.127"
 description = "NVRTC native runtime libraries"
-optional = true
+optional = false
 python-versions = ">=3"
 groups = ["main"]
 markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\" and extra == \"llm\""
@@ -978,7 +990,7 @@ files = [
 name = "nvidia-cuda-runtime-cu12"
 version = "12.4.127"
 description = "CUDA Runtime native Libraries"
-optional = true
+optional = false
 python-versions = ">=3"
 groups = ["main"]
 markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\" and extra == \"llm\""
@@ -992,7 +1004,7 @@ files = [
 name = "nvidia-cudnn-cu12"
 version = "9.1.0.70"
 description = "cuDNN runtime libraries"
-optional = true
+optional = false
 python-versions = ">=3"
 groups = ["main"]
 markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\" and extra == \"llm\""
@@ -1008,7 +1020,7 @@ nvidia-cublas-cu12 = "*"
 name = "nvidia-cufft-cu12"
 version = "11.2.1.3"
 description = "CUFFT native runtime libraries"
-optional = true
+optional = false
 python-versions = ">=3"
 groups = ["main"]
 markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\" and extra == \"llm\""
@@ -1025,7 +1037,7 @@ nvidia-nvjitlink-cu12 = "*"
 name = "nvidia-curand-cu12"
 version = "10.3.5.147"
 description = "CURAND native runtime libraries"
-optional = true
+optional = false
 python-versions = ">=3"
 groups = ["main"]
 markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\" and extra == \"llm\""
@@ -1039,7 +1051,7 @@ files = [
 name = "nvidia-cusolver-cu12"
 version = "11.6.1.9"
 description = "CUDA solver native runtime libraries"
-optional = true
+optional = false
 python-versions = ">=3"
 groups = ["main"]
 markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\" and extra == \"llm\""
@@ -1058,7 +1070,7 @@ nvidia-nvjitlink-cu12 = "*"
 name = "nvidia-cusparse-cu12"
 version = "12.3.1.170"
 description = "CUSPARSE native runtime libraries"
-optional = true
+optional = false
 python-versions = ">=3"
 groups = ["main"]
 markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\" and extra == \"llm\""
@@ -1075,7 +1087,7 @@ nvidia-nvjitlink-cu12 = "*"
 name = "nvidia-cusparselt-cu12"
 version = "0.6.2"
 description = "NVIDIA cuSPARSELt"
-optional = true
+optional = false
 python-versions = "*"
 groups = ["main"]
 markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\" and extra == \"llm\""
@@ -1089,7 +1101,7 @@ files = [
 name = "nvidia-nccl-cu12"
 version = "2.21.5"
 description = "NVIDIA Collective Communication Library (NCCL) Runtime"
-optional = true
+optional = false
 python-versions = ">=3"
 groups = ["main"]
 markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\" and extra == \"llm\""
@@ -1101,7 +1113,7 @@ files = [
 name = "nvidia-nvjitlink-cu12"
 version = "12.4.127"
 description = "Nvidia JIT LTO Library"
-optional = true
+optional = false
 python-versions = ">=3"
 groups = ["main"]
 markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\" and extra == \"llm\""
@@ -1115,7 +1127,7 @@ files = [
 name = "nvidia-nvtx-cu12"
 version = "12.4.127"
 description = "NVIDIA Tools Extension"
-optional = true
+optional = false
 python-versions = ">=3"
 groups = ["main"]
 markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\" and extra == \"llm\""
@@ -1408,6 +1420,133 @@ packaging = ">=22.0"
 setuptools = ">=42.0.0"
 
 [[package]]
+name = "pynput"
+version = "1.8.1"
+description = "Monitor and control user input devices"
+optional = false
+python-versions = "*"
+groups = ["main"]
+files = [
+    {file = "pynput-1.8.1-py2.py3-none-any.whl", hash = "sha256:42dfcf27404459ca16ca889c8fb8ffe42a9fe54f722fd1a3e130728e59e768d2"},
+    {file = "pynput-1.8.1.tar.gz", hash = "sha256:70d7c8373ee98911004a7c938742242840a5628c004573d84ba849d4601df81e"},
+]
+
+[package.dependencies]
+evdev = {version = ">=1.3", markers = "\"linux\" in sys_platform"}
+pyobjc-framework-ApplicationServices = {version = ">=8.0", markers = "sys_platform == \"darwin\""}
+pyobjc-framework-Quartz = {version = ">=8.0", markers = "sys_platform == \"darwin\""}
+python-xlib = {version = ">=0.17", markers = "\"linux\" in sys_platform"}
+six = "*"
+
+[[package]]
+name = "pyobjc-core"
+version = "11.0"
+description = "Python<->ObjC Interoperability Module"
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+markers = "sys_platform == \"darwin\""
+files = [
+    {file = "pyobjc_core-11.0-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:10866b3a734d47caf48e456eea0d4815c2c9b21856157db5917b61dee06893a1"},
+    {file = "pyobjc_core-11.0-cp311-cp311-macosx_10_9_universal2.whl", hash = "sha256:50675c0bb8696fe960a28466f9baf6943df2928a1fd85625d678fa2f428bd0bd"},
+    {file = "pyobjc_core-11.0-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:a03061d4955c62ddd7754224a80cdadfdf17b6b5f60df1d9169a3b1b02923f0b"},
+    {file = "pyobjc_core-11.0-cp313-cp313-macosx_10_13_universal2.whl", hash = "sha256:c338c1deb7ab2e9436d4175d1127da2eeed4a1b564b3d83b9f3ae4844ba97e86"},
+    {file = "pyobjc_core-11.0-cp313-cp313t-macosx_10_13_universal2.whl", hash = "sha256:b4e9dc4296110f251a4033ff3f40320b35873ea7f876bd29a1c9705bb5e08c59"},
+    {file = "pyobjc_core-11.0-cp39-cp39-macosx_10_9_universal2.whl", hash = "sha256:02406ece449d0f41b31e579e47ca77ced3eb57533df955281bfcecc99da74fba"},
+    {file = "pyobjc_core-11.0.tar.gz", hash = "sha256:63bced211cb8a8fb5c8ff46473603da30e51112861bd02c438fbbbc8578d9a70"},
+]
+
+[[package]]
+name = "pyobjc-framework-applicationservices"
+version = "11.0"
+description = "Wrappers for the framework ApplicationServices on macOS"
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+markers = "sys_platform == \"darwin\""
+files = [
+    {file = "pyobjc_framework_ApplicationServices-11.0-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:bc8f34b5b59ffd3c210ae883d794345c1197558ff3da0f5800669cf16435271e"},
+    {file = "pyobjc_framework_ApplicationServices-11.0-cp311-cp311-macosx_10_9_universal2.whl", hash = "sha256:61a99eef23abb704257310db4f5271137707e184768f6407030c01de4731b67b"},
+    {file = "pyobjc_framework_ApplicationServices-11.0-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:5fbeb425897d6129471d451ec61a29ddd5b1386eb26b1dd49cb313e34616ee21"},
+    {file = "pyobjc_framework_ApplicationServices-11.0-cp313-cp313-macosx_10_13_universal2.whl", hash = "sha256:59becf3cd87a4f4cedf4be02ff6cf46ed736f5c1123ce629f788aaafad91eff0"},
+    {file = "pyobjc_framework_ApplicationServices-11.0-cp313-cp313t-macosx_10_13_universal2.whl", hash = "sha256:44b466e8745fb49e8ac20f29f2ffd7895b45e97aa63a844b2a80a97c3a34346f"},
+    {file = "pyobjc_framework_ApplicationServices-11.0-cp39-cp39-macosx_10_9_universal2.whl", hash = "sha256:74963e15a751d1454c1b8060914f116956e3a68f6a117c2163f491609125283b"},
+    {file = "pyobjc_framework_applicationservices-11.0.tar.gz", hash = "sha256:d6ea18dfc7d5626a3ecf4ac72d510405c0d3a648ca38cae8db841acdebecf4d2"},
+]
+
+[package.dependencies]
+pyobjc-core = ">=11.0"
+pyobjc-framework-Cocoa = ">=11.0"
+pyobjc-framework-CoreText = ">=11.0"
+pyobjc-framework-Quartz = ">=11.0"
+
+[[package]]
+name = "pyobjc-framework-cocoa"
+version = "11.0"
+description = "Wrappers for the Cocoa frameworks on macOS"
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+markers = "sys_platform == \"darwin\""
+files = [
+    {file = "pyobjc_framework_Cocoa-11.0-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:fbc65f260d617d5463c7fb9dbaaffc23c9a4fabfe3b1a50b039b61870b8daefd"},
+    {file = "pyobjc_framework_Cocoa-11.0-cp311-cp311-macosx_10_9_universal2.whl", hash = "sha256:3ea7be6e6dd801b297440de02d312ba3fa7fd3c322db747ae1cb237e975f5d33"},
+    {file = "pyobjc_framework_Cocoa-11.0-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:280a577b83c68175a28b2b7138d1d2d3111f2b2b66c30e86f81a19c2b02eae71"},
+    {file = "pyobjc_framework_Cocoa-11.0-cp313-cp313-macosx_10_13_universal2.whl", hash = "sha256:15b2bd977ed340074f930f1330f03d42912d5882b697d78bd06f8ebe263ef92e"},
+    {file = "pyobjc_framework_Cocoa-11.0-cp313-cp313t-macosx_10_13_universal2.whl", hash = "sha256:5750001db544e67f2b66f02067d8f0da96bb2ef71732bde104f01b8628f9d7ea"},
+    {file = "pyobjc_framework_Cocoa-11.0-cp39-cp39-macosx_10_9_universal2.whl", hash = "sha256:ddff25b0755d59873d186e1e07d6aaddb19d55e3ae890d69ff2d9babf8627657"},
+    {file = "pyobjc_framework_cocoa-11.0.tar.gz", hash = "sha256:00346a8cb81ad7b017b32ff7bf596000f9faa905807b1bd234644ebd47f692c5"},
+]
+
+[package.dependencies]
+pyobjc-core = ">=11.0"
+
+[[package]]
+name = "pyobjc-framework-coretext"
+version = "11.0"
+description = "Wrappers for the framework CoreText on macOS"
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+markers = "sys_platform == \"darwin\""
+files = [
+    {file = "pyobjc_framework_CoreText-11.0-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:6939b4ea745b349b5c964823a2071f155f5defdc9b9fc3a13f036d859d7d0439"},
+    {file = "pyobjc_framework_CoreText-11.0-cp311-cp311-macosx_10_9_universal2.whl", hash = "sha256:56a4889858308b0d9f147d568b4d91c441cc0ffd332497cb4f709bb1990450c1"},
+    {file = "pyobjc_framework_CoreText-11.0-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:fb90e7f370b3fd7cb2fb442e3dc63fedf0b4af6908db1c18df694d10dc94669d"},
+    {file = "pyobjc_framework_CoreText-11.0-cp313-cp313-macosx_10_13_universal2.whl", hash = "sha256:7947f755782456bd663e0b00c7905eeffd10f839f0bf2af031f68ded6a1ea360"},
+    {file = "pyobjc_framework_CoreText-11.0-cp313-cp313t-macosx_10_13_universal2.whl", hash = "sha256:5356116bae33ec49f1f212c301378a7d08000440a2d6a7281aab351945528ab9"},
+    {file = "pyobjc_framework_CoreText-11.0-cp39-cp39-macosx_10_9_universal2.whl", hash = "sha256:4a76e1307747f2ee8180d38844cd62b8bb1701b4203d9234cc41f6603d4ae654"},
+    {file = "pyobjc_framework_coretext-11.0.tar.gz", hash = "sha256:a68437153e627847e3898754dd3f13ae0cb852246b016a91f9c9cbccb9f91a43"},
+]
+
+[package.dependencies]
+pyobjc-core = ">=11.0"
+pyobjc-framework-Cocoa = ">=11.0"
+pyobjc-framework-Quartz = ">=11.0"
+
+[[package]]
+name = "pyobjc-framework-quartz"
+version = "11.0"
+description = "Wrappers for the Quartz frameworks on macOS"
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+markers = "sys_platform == \"darwin\""
+files = [
+    {file = "pyobjc_framework_Quartz-11.0-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:da3ab13c9f92361959b41b0ad4cdd41ae872f90a6d8c58a9ed699bc08ab1c45c"},
+    {file = "pyobjc_framework_Quartz-11.0-cp311-cp311-macosx_10_9_universal2.whl", hash = "sha256:d251696bfd8e8ef72fbc90eb29fec95cb9d1cc409008a183d5cc3246130ae8c2"},
+    {file = "pyobjc_framework_Quartz-11.0-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:cb4a9f2d9d580ea15e25e6b270f47681afb5689cafc9e25712445ce715bcd18e"},
+    {file = "pyobjc_framework_Quartz-11.0-cp313-cp313-macosx_10_13_universal2.whl", hash = "sha256:973b4f9b8ab844574461a038bd5269f425a7368d6e677e3cc81fcc9b27b65498"},
+    {file = "pyobjc_framework_Quartz-11.0-cp313-cp313t-macosx_10_13_universal2.whl", hash = "sha256:66ab58d65348863b8707e63b2ec5cdc54569ee8189d1af90d52f29f5fdf6272c"},
+    {file = "pyobjc_framework_Quartz-11.0-cp39-cp39-macosx_10_9_universal2.whl", hash = "sha256:1032f63f2a4ee98366764e69c249f1d93813821e17d224cf626cf11fb1801fc4"},
+    {file = "pyobjc_framework_quartz-11.0.tar.gz", hash = "sha256:3205bf7795fb9ae34747f701486b3db6dfac71924894d1f372977c4d70c3c619"},
+]
+
+[package.dependencies]
+pyobjc-core = ">=11.0"
+pyobjc-framework-Cocoa = ">=11.0"
+
+[[package]]
 name = "pyreadline3"
 version = "3.5.4"
 description = "A python implementation of GNU readline."
@@ -1499,6 +1638,22 @@ tomli = {version = ">=1.0.0", markers = "python_version < \"3.11\""}
 
 [package.extras]
 testing = ["argcomplete", "attrs (>=19.2.0)", "hypothesis (>=3.56)", "mock", "nose", "pygments (>=2.7.2)", "requests", "setuptools", "xmlschema"]
+
+[[package]]
+name = "python-xlib"
+version = "0.33"
+description = "Python X Library"
+optional = false
+python-versions = "*"
+groups = ["main"]
+markers = "\"linux\" in sys_platform"
+files = [
+    {file = "python-xlib-0.33.tar.gz", hash = "sha256:55af7906a2c75ce6cb280a584776080602444f75815a7aff4d287bb2d7018b32"},
+    {file = "python_xlib-0.33-py2.py3-none-any.whl", hash = "sha256:c3534038d42e0df2f1392a1b30a15a4ff5fdc2b86cfa94f072bf11b10a164398"},
+]
+
+[package.dependencies]
+six = ">=1.10.0"
 
 [[package]]
 name = "pywin32"
@@ -1605,7 +1760,7 @@ files = [
 name = "regex"
 version = "2024.11.6"
 description = "Alternative regular expression module, to replace re."
-optional = true
+optional = false
 python-versions = ">=3.8"
 groups = ["main"]
 markers = "extra == \"llm\""
@@ -1732,7 +1887,7 @@ use-chardet-on-py3 = ["chardet (>=3.0.2,<6)"]
 name = "safetensors"
 version = "0.5.3"
 description = ""
-optional = true
+optional = false
 python-versions = ">=3.7"
 groups = ["main"]
 markers = "extra == \"llm\""
@@ -1800,6 +1955,18 @@ files = [
     {file = "shiboken6-6.8.2.1-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:c83e90056f13d0872cc4d2b7bf60b6d6e3b1b172f1f91910c0ba5b641af01758"},
     {file = "shiboken6-6.8.2.1-cp39-abi3-manylinux_2_39_aarch64.whl", hash = "sha256:8592401423acc693f51dbbfae5e7493cc3ed6738be79daaf90afa07f4da5bb25"},
     {file = "shiboken6-6.8.2.1-cp39-abi3-win_amd64.whl", hash = "sha256:1b751d47b759762b7ca31bad278d52eca4105d3028880d93979261ebbfba810c"},
+]
+
+[[package]]
+name = "six"
+version = "1.17.0"
+description = "Python 2 and 3 compatibility utilities"
+optional = false
+python-versions = "!=3.0.*,!=3.1.*,!=3.2.*,>=2.7"
+groups = ["main"]
+files = [
+    {file = "six-1.17.0-py2.py3-none-any.whl", hash = "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274"},
+    {file = "six-1.17.0.tar.gz", hash = "sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81"},
 ]
 
 [[package]]
@@ -2023,7 +2190,7 @@ files = [
 name = "torch"
 version = "2.6.0"
 description = "Tensors and Dynamic neural networks in Python with strong GPU acceleration"
-optional = true
+optional = false
 python-versions = ">=3.9.0"
 groups = ["main"]
 markers = "extra == \"llm\""
@@ -2102,7 +2269,7 @@ telegram = ["requests"]
 name = "transformers"
 version = "4.35.2"
 description = "State-of-the-art Machine Learning for JAX, PyTorch and TensorFlow"
-optional = true
+optional = false
 python-versions = ">=3.8.0"
 groups = ["main"]
 markers = "extra == \"llm\""
@@ -2172,7 +2339,7 @@ vision = ["Pillow (<10.0.0)"]
 name = "triton"
 version = "3.2.0"
 description = "A language and compiler for custom Deep Learning operations"
-optional = true
+optional = false
 python-versions = "*"
 groups = ["main"]
 markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\" and extra == \"llm\""
@@ -2258,4 +2425,4 @@ llm = ["torch", "transformers"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.9,<3.12"
-content-hash = "febd073a706593e5cee0572ff0c0e9734f23eacdc5b5c9550282a9f4d13467a6"
+content-hash = "2fe8a81c83487d12a2105f8ff40c228a0a85b7190ffba085a190ff73263ab2a2"

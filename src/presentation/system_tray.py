@@ -2,6 +2,9 @@ from PySide6.QtWidgets import QSystemTrayIcon, QMenu, QWidget
 from PySide6.QtGui import QIcon, QAction, QFont, QClipboard, QPixmap, QPainter, QColor
 from PySide6.QtCore import Slot, QSize, Qt, QTimer
 from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QHBoxLayout, QPushButton
+import src.presentation.system_extensions.windows as windows
+import src.presentation.system_extensions.macos as macos
+import src.presentation.system_extensions.linux as linux
 from pathlib import Path
 from .toast.custom_toast import CustomToast
 import logging
@@ -9,8 +12,6 @@ import platform
 import os
 
 from .windows.settings import SettingsWindow
-from .windows.download_manager import DownloadManagerWindow
-from ..domain.settings import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -948,141 +949,15 @@ class SystemTrayIcon(QSystemTrayIcon):
     def _auto_paste_to_active_window(self):
         """Automatically paste the clipboard content into the currently active window"""
         try:
-            logger.debug("Attempting to auto-paste to active window")
-            
+            logger.debug("Attempting to auto-paste to active window")            
             # Import platform-specific modules
             import platform
             if platform.system() == 'Windows':
-                import ctypes
-                from ctypes import wintypes
-                import time
-                
-                # Give a small delay for UI to stabilize
-                time.sleep(0.5)
-                
-                # Simulate Ctrl+V keystroke
-                # Virtual Key Codes
-                VK_CONTROL = 0x11
-                VK_V = 0x56
-                
-                # Input types
-                INPUT_KEYBOARD = 1
-                
-                # Key event types
-                KEYEVENTF_KEYDOWN = 0x0000
-                KEYEVENTF_KEYUP = 0x0002
-                
-                # Define structures for input simulation
-                class MOUSEINPUT(ctypes.Structure):
-                    _fields_ = [
-                        ("dx", wintypes.LONG),
-                        ("dy", wintypes.LONG),
-                        ("mouseData", wintypes.DWORD),
-                        ("dwFlags", wintypes.DWORD),
-                        ("time", wintypes.DWORD),
-                        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))
-                    ]
-                
-                class KEYBDINPUT(ctypes.Structure):
-                    _fields_ = [
-                        ("wVk", wintypes.WORD),
-                        ("wScan", wintypes.WORD),
-                        ("dwFlags", wintypes.DWORD),
-                        ("time", wintypes.DWORD),
-                        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))
-                    ]
-                
-                class HARDWAREINPUT(ctypes.Structure):
-                    _fields_ = [
-                        ("uMsg", wintypes.DWORD),
-                        ("wParamL", wintypes.WORD),
-                        ("wParamH", wintypes.WORD)
-                    ]
-                
-                class INPUT_union(ctypes.Union):
-                    _fields_ = [
-                        ("mi", MOUSEINPUT),
-                        ("ki", KEYBDINPUT),
-                        ("hi", HARDWAREINPUT)
-                    ]
-                
-                class INPUT(ctypes.Structure):
-                    _fields_ = [
-                        ("type", wintypes.DWORD),
-                        ("union", INPUT_union)
-                    ]
-                
-                # Prepare keystroke events:
-                # Press Ctrl, Press V, Release V, Release Ctrl
-                inputs = (INPUT * 4)()
-                
-                # Press Ctrl
-                inputs[0].type = INPUT_KEYBOARD
-                inputs[0].union.ki.wVk = VK_CONTROL
-                inputs[0].union.ki.dwFlags = KEYEVENTF_KEYDOWN
-                
-                # Press V
-                inputs[1].type = INPUT_KEYBOARD
-                inputs[1].union.ki.wVk = VK_V
-                inputs[1].union.ki.dwFlags = KEYEVENTF_KEYDOWN
-                
-                # Release V
-                inputs[2].type = INPUT_KEYBOARD
-                inputs[2].union.ki.wVk = VK_V
-                inputs[2].union.ki.dwFlags = KEYEVENTF_KEYUP
-                
-                # Release Ctrl
-                inputs[3].type = INPUT_KEYBOARD
-                inputs[3].union.ki.wVk = VK_CONTROL
-                inputs[3].union.ki.dwFlags = KEYEVENTF_KEYUP
-                
-                # Send keystrokes
-                nInputs = len(inputs)
-                cbSize = ctypes.c_int(ctypes.sizeof(INPUT))
-                ctypes.windll.user32.SendInput(nInputs, ctypes.pointer(inputs), cbSize)
-                
-                logger.debug("Auto-paste keystrokes sent")
-                
+                windows.WindowsSystemExtension.paste_text(self.last_transcription)     
             elif platform.system() == 'Darwin':  # macOS
-                # Future implementation
-                logger.warning("Auto-paste for macOS not implemented yet")
-                
+                macos.MacOSSystemExtension.paste_text(self.last_transcription)
             elif platform.system() == 'Linux':
-                # Use xdotool to simulate Ctrl+V keystroke
-                import subprocess
-                import time
-                
-                # Ensure clipboard content is updated
-                # We'll force a synchronization by using xsel
-                try:
-                    # First, ensure we have the latest transcript in both clipboards
-                    if self.last_transcription:
-                        # Re-copy to clipboard to ensure it's fresh
-                        clipboard = QApplication.clipboard()
-                        clipboard.setText(self.last_transcription)
-                        # Also set the X11 primary selection
-                        clipboard.setText(self.last_transcription, QClipboard.Selection)
-                        logger.debug("Re-copied content to both clipboards for paste operation")
-                        
-                        # Use xsel to ensure the clipboard content is synchronized
-                        try:
-                            # Copy our content to X clipboard using xsel
-                            process = subprocess.Popen(['xsel', '-b', '-i'], stdin=subprocess.PIPE)
-                            process.communicate(input=self.last_transcription.encode())
-                            logger.debug("Synchronized clipboard content with xsel")
-                        except (subprocess.SubprocessError, FileNotFoundError):
-                            logger.warning("xsel not found, using Qt clipboard only")
-                
-                    # Give a larger delay for UI and clipboard to stabilize
-                    time.sleep(1.0)
-                    
-                    # Simulate Ctrl+V using xdotool
-                    subprocess.run(['xdotool', 'key', 'ctrl+v'], check=True)
-                    logger.debug("Auto-paste keystrokes sent via xdotool")
-                except subprocess.CalledProcessError as e:
-                    logger.error(f"Failed to send keystrokes via xdotool: {e}")
-                except FileNotFoundError:
-                    logger.error("xdotool not found. Please install it to enable auto-paste functionality.")
+                linux.LinuxSystemExtension.paste_text(self.last_transcription)
                 
         except Exception as e:
             logger.error(f"Error in auto-paste: {e}", exc_info=True)

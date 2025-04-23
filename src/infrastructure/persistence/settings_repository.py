@@ -53,10 +53,17 @@ class SettingsRepository:
     
     def _create_default_settings(self) -> Settings:
         logger.info("Creating default settings")
+        import platform
+        if platform.system() == "Darwin":
+            record_hotkey = QKeySequence("Command+Shift+R")
+            quit_hotkey = QKeySequence("Command+Q")
+        else:
+            record_hotkey = QKeySequence("Ctrl+Shift+R")
+            quit_hotkey = QKeySequence("Ctrl+Shift+Q")
         return Settings(
             hotkeys=HotkeySettings(
-                record_key=QKeySequence("Ctrl+Shift+R"),
-                quit_key=QKeySequence("Ctrl+Shift+Q")
+                record_key=record_hotkey,
+                quit_key=quit_hotkey
             ),
             audio=AudioSettings(
                 input_device="default",
@@ -103,6 +110,23 @@ class SettingsRepository:
     def _deserialize_settings(self, data: dict) -> Settings:
         from ...domain.settings import LLMSettings, AppearanceSettings
         
+        # Handle hotkeys
+        record_key = QKeySequence(data["hotkeys"]["record_key"].split(",")[0].strip())
+        quit_key = QKeySequence(data["hotkeys"]["quit_key"]) if data["hotkeys"].get("quit_key") else None
+        process_text_key = QKeySequence(data["hotkeys"]["process_text_key"]) if data["hotkeys"].get("process_text_key") else None
+        
+        # Log the parsed hotkeys
+        logger.debug(f"Parsed hotkeys from settings: record_key={record_key.toString()}, "
+                    f"quit_key={quit_key.toString() if quit_key else 'None'}, "
+                    f"process_text_key={process_text_key.toString() if process_text_key else 'None'}")
+        
+        # Create hotkey settings
+        hotkey_settings = HotkeySettings(
+            record_key=record_key,
+            quit_key=quit_key,
+            process_text_key=process_text_key
+        )
+        
         # Create LLM settings if present in data
         llm_settings = None
         if "llm" in data:
@@ -126,11 +150,7 @@ class SettingsRepository:
             )
             
         return Settings(
-            hotkeys=HotkeySettings(
-                record_key=QKeySequence(data["hotkeys"]["record_key"]),
-                quit_key=QKeySequence(data["hotkeys"]["quit_key"]) if data["hotkeys"].get("quit_key") else None,
-                process_text_key=QKeySequence(data["hotkeys"]["process_text_key"]) if data["hotkeys"].get("process_text_key") else None
-            ),
+            hotkeys=hotkey_settings,
             audio=AudioSettings(
                 input_device=data["audio"]["input_device"],
                 sample_rate=data["audio"]["sample_rate"],

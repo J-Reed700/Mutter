@@ -147,7 +147,11 @@ class Transcriber:
                 language=language,
                 beam_size=5,
                 vad_filter=True,  # Enable Voice Activity Detection
-                vad_parameters={"min_silence_duration_ms": 500}  # Adjust VAD parameters
+                vad_parameters={
+                    "min_silence_duration_ms": 1000,  # Increased from 500ms to 1000ms
+                    "speech_pad_ms": 400,  # Added speech padding
+                    "threshold": 0.35  # Lower threshold for more lenient detection
+                }
             )
             
             # Collect all segments

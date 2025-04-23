@@ -20,7 +20,9 @@ requests = "^2.31.0"
 # Dependencies for local LLM processing (now included in regular build)
 torch = "^2.1.0"
 transformers = "^4.20.0"
+python-xlib = "^0.33"
 pynput = "^1.8.1"
+dbus-python = "^1.4.0"
 
 [tool.poetry.extras]
 llm = ["torch", "transformers"]

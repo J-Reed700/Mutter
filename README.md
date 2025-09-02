@@ -22,8 +22,7 @@ A powerful voice recording application with local speech-to-text transcription. 
 
 1. Clone the repository:
    ```
-   git clone https://github.com/yourusername/voice-recorder.git
-   cd voice-recorder
+   git clone https://github.com/J-Reed700/Mutter
 
 2. Install Python 3.11
    https://www.python.org/downloads/release/python-3110/

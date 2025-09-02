@@ -56,7 +56,7 @@ A powerful voice recording application with local speech-to-text transcription. 
 
 1. Run the application:
    ```
-   python -m poetry run python -m src.main
+   poetry run python -m src.main
    ```
 
 2. The application will start in the system tray.

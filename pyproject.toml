@@ -20,9 +20,9 @@ requests = "^2.31.0"
 # Dependencies for local LLM processing (now included in regular build)
 torch = "^2.1.0"
 transformers = "^4.20.0"
-python-xlib = "^0.33"
+python-xlib = {version = "^0.33", platform = "linux"}
 pynput = "^1.8.1"
-dbus-python = "^1.4.0"
+dbus-python = {version = "^1.4.0", platform = "linux"}
 
 [tool.poetry.extras]
 llm = ["torch", "transformers"]
@@ -39,4 +39,4 @@ requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.scripts]
-voice-recorder = "src.main:main" 
+mutter = "src.main:run_application" 

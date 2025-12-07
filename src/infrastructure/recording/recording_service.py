@@ -284,6 +284,10 @@ class RecordingService(QObject):
             logger.debug("Hotkey released, stopping recording")
             self.stop_requested.emit()
             self.stop_recording()
+        elif platform.system() == 'Darwin':
+            logger.debug("Hotkey released, stopping recording")
+            self.stop_requested.emit()
+            self.stop_recording()
         else:
             pass
     
@@ -506,9 +510,8 @@ class RecordingService(QObject):
             from ..hotkeys.windows import WindowsHotkeyHandler
             return WindowsHotkeyHandler()
         elif system == 'Darwin':  # macOS
-            # Future implementation
-            logger.warning("macOS hotkey handler not implemented")
-            return None
+            from ..hotkeys.macos import MacOSHotkeyHandler
+            return MacOSHotkeyHandler()
         elif system == 'Linux':
             session_type = os.environ.get('XDG_SESSION_TYPE', '').lower()
             
@@ -618,4 +621,4 @@ class RecordingService(QObject):
         # Log updated settings
         self._log_audio_settings()
         
-        return True 
+        return True

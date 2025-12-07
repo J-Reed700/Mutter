@@ -178,11 +178,16 @@ class AppBootstrap:
         else:
             logger.warning("No hotkey handler available in recording service")
     
-    def show_settings(self):
-        """Show the settings window."""
-        logger.debug("Showing settings window")
+    def _show_settings(self):
+        """Show the settings dialog."""
+        logger.debug("Showing settings dialog")
         
-        # Create a new window if it doesn't exist or was closed
+        # Disable hotkeys while settings dialog is open
+        if hasattr(self.service_manager.recording_service, 'hotkey_handler') and \
+           hasattr(self.service_manager.recording_service.hotkey_handler, 'set_hotkeys_enabled'):
+            self.service_manager.recording_service.hotkey_handler.set_hotkeys_enabled(False)
+        
+       # Create a new window if it doesn't exist or was closed
         if self.settings_window is None or not self.settings_window.isVisible():
             self.settings_window = SettingsWindow(
                 settings=self.service_manager.settings,
@@ -192,7 +197,7 @@ class AppBootstrap:
             # Connect settings saved signal
             self.settings_window.settings_saved.connect(self._on_settings_saved)
         
-        # Show and activate the window
+        # Show the settings window
         self.settings_window.show()
         self.settings_window.raise_()
         self.settings_window.activateWindow()
@@ -237,15 +242,25 @@ class AppBootstrap:
         self.download_manager_window.activateWindow()
         '''
     
-    def _on_settings_saved(self):
+    def _on_settings_saved(self, settings):
         """Handle settings saved event."""
-        logger.info("Settings saved, reloading")
+        logger.debug("Settings saved, updating components")
         
-        # Reload settings in service manager
-        self.service_manager.reload_settings()
+        # Update service manager with new settings
+        self.service_manager.update_settings(settings)
         
         # Update tray with new settings
         self.tray.update_settings(self.service_manager.settings)
+    
+    
+    def _on_settings_canceled(self):
+        """Handle settings canceled event."""
+        logger.debug("Settings canceled")
+        
+        # Re-enable hotkeys
+        if hasattr(self.service_manager.recording_service, 'hotkey_handler') and \
+           hasattr(self.service_manager.recording_service.hotkey_handler, 'set_hotkeys_enabled'):
+            self.service_manager.recording_service.hotkey_handler.set_hotkeys_enabled(True)
     
     def _on_exit_hotkey(self):
         """Handle exit hotkey press event."""

@@ -149,10 +149,10 @@ class SettingsWindow(QMainWindow):
         self.record_hotkey_edit.editingFinished.connect(self._mark_settings_changed)
         record_layout.addRow("Record Key:", self.record_hotkey_edit)
         
-        # Add a description
-        record_desc = QLabel("Press this key combination to start recording")
-        record_desc.setStyleSheet("color: #666666; font-size: 12px;")
-        record_layout.addRow("", record_desc)
+        # Add a display label for showing friendly key representation
+        self.record_hotkey_display = QLabel("")
+        self.record_hotkey_display.setStyleSheet(f"color: {AppTheme.TEXT_SECONDARY}; font-style: italic;")
+        record_layout.addRow("", self.record_hotkey_display)
         
         layout.addWidget(record_group)
         
@@ -169,14 +169,17 @@ class SettingsWindow(QMainWindow):
         self.quit_hotkey_edit.editingFinished.connect(self._mark_settings_changed)
         quit_layout.addRow("Quit Key:", self.quit_hotkey_edit)
         
-        # Add a description
-        quit_desc = QLabel("Press this key combination to quit the application")
-        quit_desc.setStyleSheet("color: #666666; font-size: 12px;")
-        quit_layout.addRow("", quit_desc)
+        # Add a display label for showing friendly key representation
+        self.quit_hotkey_display = QLabel("")
+        self.quit_hotkey_display.setStyleSheet(f"color: {AppTheme.TEXT_SECONDARY}; font-style: italic;")
+        quit_layout.addRow("", self.quit_hotkey_display)
         
         layout.addWidget(quit_group)
         
         layout.addStretch()
+        
+        # Initial update of displays
+        self._update_hotkey_displays()
         
         return widget
     
@@ -856,9 +859,82 @@ class SettingsWindow(QMainWindow):
         
         # 1. Hotkeys tab
         if hasattr(self, 'record_hotkey_edit'):
-            self.settings.hotkeys.record_key = self.record_hotkey_edit.keySequence()
+            # Get the key sequence from the editor
+            record_key = self.record_hotkey_edit.keySequence()
+            record_key_str = record_key.toString()
+            
+            # On macOS, ensure that if "Ctrl" is used, we mention this might not work as expected
+            import platform
+            if platform.system() == "Darwin":
+                if "Ctrl" in record_key_str and "Meta" not in record_key_str:
+                    confirm = QMessageBox.question(
+                        self,
+                        "Confirm Control Key Usage",
+                        "You've selected a shortcut using the Control key. On macOS, the Command key (⌘) "
+                        "is typically used for shortcuts.\n\n"
+                        "Do you want to continue with the Control key? Choose 'No' to use Command instead.",
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.No
+                    )
+                    
+                    if confirm == QMessageBox.No:
+                        # Replace Ctrl with Meta (Command) in the key sequence
+                        new_key_str = record_key_str.replace("Ctrl", "Meta")
+                        logger.info(f"Converting key sequence from {record_key_str} to {new_key_str}")
+                        record_key = QKeySequence(new_key_str)
+                        
+                        # Use our helper method to get a friendly display
+                        friendly_display = self.get_macos_friendly_key_display(record_key)
+                        logger.debug(f"Friendly display for macOS: {friendly_display}")
+                        
+                        # Show confirmation to the user
+                        QMessageBox.information(
+                            self,
+                            "Hotkey Updated",
+                            f"Your hotkey has been converted to use Command instead of Control: {friendly_display}"
+                        )
+                
+                # Log raw key data for debugging
+                logger.debug(f"Final key sequence for record hotkey: {record_key.toString()}")
+            
+            self.settings.hotkeys.record_key = record_key
+            
         if hasattr(self, 'quit_hotkey_edit'):
-            self.settings.hotkeys.quit_key = self.quit_hotkey_edit.keySequence()
+            quit_key = self.quit_hotkey_edit.keySequence()
+            
+            # Apply the same macOS normalization to quit key if needed
+            import platform
+            if platform.system() == "Darwin" and "Ctrl" in quit_key.toString() and "Meta" not in quit_key.toString():
+                confirm = QMessageBox.question(
+                    self,
+                    "Confirm Control Key Usage for Quit",
+                    "You've selected a quit shortcut using the Control key. On macOS, the Command key (⌘) "
+                    "is typically used for shortcuts.\n\n"
+                    "Do you want to continue with the Control key? Choose 'No' to use Command instead.",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No
+                )
+                
+                if confirm == QMessageBox.No:
+                    # Replace Ctrl with Meta (Command) in the key sequence
+                    new_key_str = quit_key.toString().replace("Ctrl", "Meta")
+                    logger.info(f"Converting quit key sequence from {quit_key.toString()} to {new_key_str}")
+                    quit_key = QKeySequence(new_key_str)
+                    
+                    # Use our helper method to get a friendly display
+                    friendly_display = self.get_macos_friendly_key_display(quit_key)
+                    logger.debug(f"Friendly display for macOS quit key: {friendly_display}")
+                    
+                    # Show confirmation to the user
+                    QMessageBox.information(
+                        self,
+                        "Quit Hotkey Updated",
+                        f"Your quit hotkey has been converted to use Command instead of Control: {friendly_display}"
+                    )
+            
+            # Log raw key data for debugging
+            logger.debug(f"Final key sequence for quit hotkey: {quit_key.toString()}")
+            self.settings.hotkeys.quit_key = quit_key
         
         # 2. Audio tab
         if hasattr(self, 'device_combo'):
@@ -1190,6 +1266,90 @@ class SettingsWindow(QMainWindow):
             # Update progress display to show error
             self.update_model_download_progress(f"Error starting download: {str(e)}", -1)
 
+    def _on_hotkey_capture(self, event):
+        """Capture the hotkey press"""
+        # Only process key press events (not releases)
+        if event.type() != QEvent.KeyPress:
+            return True
+        
+        # Get the key sequence
+        key = event.key()
+        modifiers = event.modifiers()
+        
+        # Create a key sequence
+        seq = QKeySequence(int(modifiers) + key)
+        
+        # Log the captured key sequence for debugging
+        logger.debug(f"Captured key sequence: {seq.toString()}")
+        
+        # Check if we're in Mac and translate Meta to a more clear name
+        import platform
+        if platform.system() == "Darwin" and "Meta" in seq.toString():
+            # Replace "Meta" with "Command" for display purposes
+            display_text = seq.toString().replace("Meta", "Command")
+            self.hotkey_capture.setText(display_text)
+            # Record the actual QKeySequence for later use
+            self.captured_hotkey = seq
+        else:
+            # Just use the key sequence as is
+            self.hotkey_capture.setText(seq.toString())
+            self.captured_hotkey = seq
+        
+        return True
+
+    @staticmethod
+    def get_macos_friendly_key_display(key_sequence: QKeySequence) -> str:
+        """
+        Convert a QKeySequence to a macOS-friendly display string with proper symbols.
+        
+        Args:
+            key_sequence: The QKeySequence to convert
+            
+        Returns:
+            str: A string representation with macOS symbols
+        """
+        if not key_sequence:
+            return ""
+            
+        # Get the key sequence as a string
+        key_str = key_sequence.toString()
+        
+        # Map keys to macOS symbols
+        key_map = {
+            "Meta": "⌘",  # Command
+            "Ctrl": "⌃",  # Control
+            "Alt": "⌥",   # Option
+            "Shift": "⇧",  # Shift
+            "Return": "↩",  # Return/Enter
+            "Escape": "⎋",  # Escape
+            "Backspace": "⌫",  # Delete left
+            "Delete": "⌦",  # Delete right
+            "Tab": "⇥",  # Tab
+        }
+        
+        # Replace keys with symbols
+        for key, symbol in key_map.items():
+            key_str = key_str.replace(key, symbol)
+            
+        return key_str
+        
+    def _update_hotkey_displays(self):
+        """Update the hotkey displays with user-friendly representations"""
+        import platform
+        if platform.system() == "Darwin":
+            if hasattr(self, 'record_hotkey_edit'):
+                key_seq = self.record_hotkey_edit.keySequence()
+                friendly_display = self.get_macos_friendly_key_display(key_seq)
+                if hasattr(self, 'record_hotkey_display') and friendly_display:
+                    self.record_hotkey_display.setText(f"Current: {friendly_display}")
+                    
+            if hasattr(self, 'quit_hotkey_edit'):
+                key_seq = self.quit_hotkey_edit.keySequence()
+                friendly_display = self.get_macos_friendly_key_display(key_seq)
+                if hasattr(self, 'quit_hotkey_display') and friendly_display:
+                    self.quit_hotkey_display.setText(f"Current: {friendly_display}")
+                    
+
 class SettingsDialog(QDialog):
     hotkey_changed = Signal(object)  # Emits QKeySequence
 
@@ -1260,9 +1420,13 @@ class SettingsDialog(QDialog):
         hotkey_layout.addRow(quit_hotkey_label, self.quit_hotkey_edit)
         
         # Add a note
-        note_label = QLabel("Note: These hotkeys work globally across all applications")
-        note_label.setStyleSheet(f"color: {AppTheme.TEXT_SECONDARY}; font-size: {AppTheme.FONT_SIZE_SMALL}pt;")
-        hotkey_layout.addRow("", note_label)
+        note = QLabel(
+            "Note: Hotkeys work globally across all applications. "
+            "On macOS, Command (⌘) is typically used instead of Control (⌃) for keyboard shortcuts."
+        )
+        note.setStyleSheet(f"color: {AppTheme.TEXT_SECONDARY}; font-size: {AppTheme.FONT_SIZE_SMALL}pt;")
+        note.setWordWrap(True)
+        hotkey_layout.addRow("", note)
         
         layout.addLayout(hotkey_layout)
         

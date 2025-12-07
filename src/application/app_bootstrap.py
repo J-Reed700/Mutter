@@ -46,7 +46,14 @@ class AppBootstrap:
                 os.environ['QT_NO_DBUS'] = '1'
                 # Set up icon theme paths
                 QIcon.setThemeName('Adwaita')
-                QIcon.setThemeSearchPaths(['/usr/share/icons'])
+                QIcon.setThemeSearchPaths([
+                    '/usr/share/icons',
+                    '/usr/share/icons/hicolor',
+                    '/usr/share/icons/Adwaita',
+                    '/usr/share/icons/gnome'
+                ])
+                # Set platform plugin path for Fedora
+                os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = '/usr/lib64/qt5/plugins/platforms'
                 logger.debug("Linux-specific configuration applied")
             except Exception as e:
                 logger.warning(f"Failed to set up Linux configuration: {e}")

@@ -28,11 +28,19 @@ class SystemTrayIcon(QSystemTrayIcon):
                 # Set up fallback icon theme path
                 QIcon.setThemeName('Adwaita')
                 QIcon.setThemeSearchPaths(['/usr/share/icons'])
+                # Additional Fedora-specific paths
+                QIcon.setThemeSearchPaths([
+                    '/usr/share/icons',
+                    '/usr/share/icons/hicolor',
+                    '/usr/share/icons/Adwaita',
+                    '/usr/share/icons/gnome'
+                ])
                 # Set a custom property to mark this as initialized
                 self.setProperty("initialized", True)
                 logger.debug("Linux-specific configuration applied")
             except Exception as e:
                 logger.warning(f"Failed to set up Linux configuration: {e}")
+                raise e
 
         # Settings for notifications (defaults)
         self.show_notifications = False
@@ -1118,10 +1126,21 @@ class SystemTrayIcon(QSystemTrayIcon):
                 # Try to reinitialize with XCB platform
                 try:
                     os.environ['QT_QPA_PLATFORM'] = 'xcb'
+                    # Try additional Fedora-specific configurations
+                    os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = '/usr/lib64/qt5/plugins/platforms'
+                    os.environ['QT_QPA_PLATFORM'] = 'xcb'
                     super().show()
                     logger.debug("System tray icon shown successfully with XCB platform")
                 except Exception as e2:
                     logger.warning(f"D-Bus error detected and XCB fallback failed: {e2}")
-                    logger.info("Application will continue working but tray icon may not be visible")
-                    # The application can still work even if the tray icon isn't visible
-                    # Users can still use hotkeys to control the application 
+                    # Try one last time with minimal configuration
+                    try:
+                        os.environ['QT_QPA_PLATFORM'] = 'xcb'
+                        os.environ['QT_NO_DBUS'] = '1'
+                        super().show()
+                        logger.debug("System tray icon shown with minimal configuration")
+                    except Exception as e3:
+                        logger.warning(f"All attempts to show system tray icon failed: {e3}")
+                        logger.info("Application will continue working but tray icon may not be visible")
+                        # The application can still work even if the tray icon isn't visible
+                        # Users can still use hotkeys to control the application 

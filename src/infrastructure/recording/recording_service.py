@@ -6,6 +6,7 @@ from uuid import uuid4
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QKeySequence
 import platform
+import os
 
 # Domain imports
 from ...domain.settings import Settings
@@ -509,8 +510,20 @@ class RecordingService(QObject):
             logger.warning("macOS hotkey handler not implemented")
             return None
         elif system == 'Linux':
-            from ..hotkeys.linux import LinuxHotkeyHandler
-            return LinuxHotkeyHandler()
+            session_type = os.environ.get('XDG_SESSION_TYPE', '').lower()
+            
+            if session_type == 'wayland':
+                logger.info("Detected Wayland session, using evdev hotkey handler")
+                from ..hotkeys.linux_wayland import WaylandHotkeyHandler
+                return WaylandHotkeyHandler()
+            
+            try:
+                from ..hotkeys.linux import LinuxHotkeyHandler
+                return LinuxHotkeyHandler()
+            except ImportError as e:
+                logger.warning(f"pynput failed ({e}), trying evdev handler")
+                from ..hotkeys.linux_wayland import WaylandHotkeyHandler
+                return WaylandHotkeyHandler()
         else:
             logger.warning(f"Unsupported platform: {system}")
             return None

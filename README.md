@@ -54,11 +54,17 @@ A powerful voice recording application with local speech-to-text transcription. 
 
 ## Usage
 
-1. Run the application:
+1. 
+
+A. Run the application (Non-Wayland):
    ```
    python -m poetry run python -m src.main
    ```
+B. If running on Wayland you may need to run from your security group
 
+   ```
+   sg input -c "source .venv/bin/activate && python -m src.main"
+   ```
 2. The application will start in the system tray.
 
 3. Press `Ctrl+Shift+R` (default hotkey) to start recording.
@@ -67,7 +73,7 @@ A powerful voice recording application with local speech-to-text transcription. 
 
 5. The transcription will appear in a notification and can be copied to clipboard. As well as pasted into your favorite text editor or chat application.
 
-6. You can press `Ctrl+Shift+Q` to quit the application.
+6. You can press `Ctrl+Alt+Q` to quit the application.
 
 
 ## Configuration

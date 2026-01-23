@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from collections import deque
 import numpy as np
 import sounddevice as sd
 from typing import Optional, Callable, List
@@ -9,8 +10,12 @@ from datetime import datetime
 import threading
 import logging
 import time
+import sys
 
 logger = logging.getLogger(__name__)
+
+# Memory logging interval (every N chunks) - approximately every ~100 seconds
+MEMORY_LOG_INTERVAL_CHUNKS = 1000
 
 @dataclass
 class AudioRecording:
@@ -35,23 +40,52 @@ class AudioRecorder:
         self.device = device
         self.recording = False
         self._lock = threading.Lock()
-        self._audio_data = []
+        
+        # THREAD SAFETY FIX: Use deque instead of list for thread-safe append/pop
+        # deque is thread-safe for append() and popleft() operations in CPython
+        self._audio_data = deque()
         self._record_thread = None
+        
+        # Device resilience tracking
+        self._device_error_count = 0
+        self._max_device_retries = 3
+        self._device_retry_delay = 1.0  # seconds
+        self._last_device_check = time.time()
+        self._device_available = True
+        
+        # Memory management - store last recording info separately to allow buffer cleanup
+        self._last_recording_info_cache = {}
+        
+        # Memory logging
+        self._last_memory_log_chunk_count = 0
         
         # Make sure recordings directory exists
         self.recordings_dir = Path("recordings")
         self.recordings_dir.mkdir(exist_ok=True)
         
         # Debug: List available audio devices
+        self._refresh_device_list()
+    
+    def _refresh_device_list(self):
+        """Refresh and log available audio devices. Handles device disconnection gracefully."""
         try:
             devices = sd.query_devices()
             logger.debug(f"Available audio devices:")
+            input_devices_found = False
             for i, dev in enumerate(devices):
                 if dev['max_input_channels'] > 0:
+                    input_devices_found = True
                     logger.debug(f"  {i}: {dev['name']} (inputs: {dev['max_input_channels']})")
             
+            if not input_devices_found:
+                logger.warning("No input audio devices found!")
+                self._device_available = False
+                return False
+            
+            self._device_available = True
+            
             # Get actual device that will be used
-            if device is None or device == 'default':
+            if self.device is None or self.device == 'default':
                 default_device = sd.default.device[0]
                 if isinstance(default_device, int):
                     device_info = sd.query_devices(default_device)
@@ -59,9 +93,58 @@ class AudioRecorder:
                 else:
                     logger.debug(f"Using system default input device")
             else:
-                logger.debug(f"Using specified input device: {device}")
+                logger.debug(f"Using specified input device: {self.device}")
+            
+            return True
+        except sd.PortAudioError as e:
+            logger.error(f"PortAudio error querying devices (device may be disconnected): {e}")
+            self._device_available = False
+            return False
         except Exception as e:
             logger.error(f"Error querying audio devices: {e}")
+            self._device_available = False
+            return False
+    
+    def is_device_available(self) -> bool:
+        """Check if the configured audio device is currently available.
+        
+        Returns:
+            bool: True if device is available, False otherwise
+        """
+        # Rate limit device checks to avoid hammering the audio subsystem
+        current_time = time.time()
+        if current_time - self._last_device_check < 1.0:
+            return self._device_available
+        
+        self._last_device_check = current_time
+        return self._refresh_device_list()
+    
+    def wait_for_device(self, timeout: float = 30.0) -> bool:
+        """Wait for the audio device to become available.
+        
+        Args:
+            timeout: Maximum time to wait in seconds
+            
+        Returns:
+            bool: True if device became available, False if timeout
+        """
+        start_time = time.time()
+        check_interval = 1.0  # Check every second
+        
+        logger.info(f"Waiting for audio device to become available (timeout: {timeout}s)")
+        
+        while time.time() - start_time < timeout:
+            if self._refresh_device_list():
+                logger.info("Audio device is now available")
+                self._device_error_count = 0
+                return True
+            
+            time.sleep(check_interval)
+            # Gradually increase interval to reduce system load
+            check_interval = min(check_interval * 1.5, 5.0)
+        
+        logger.warning(f"Timeout waiting for audio device after {timeout}s")
+        return False
     
     def _resolve_device_id(self, device_name):
         """Resolve device name to a device ID to handle multiple devices with same name"""
@@ -183,56 +266,93 @@ class AudioRecorder:
         return True
     
     def start_recording(self):
-        """Start recording audio in a separate thread."""
+        """Start recording audio in a separate thread.
+        
+        Includes resilience for device disconnection during recording.
+        """
         with self._lock:
             if self.recording:
                 return
+            
+            # Check device availability before starting
+            if not self.is_device_available():
+                logger.warning("Audio device not available, attempting to wait for it...")
+                if not self.wait_for_device(timeout=5.0):
+                    logger.error("Cannot start recording: audio device not available")
+                    return
                 
             self.recording = True
-            self._audio_data = []
+            self._audio_data = deque()  # Thread-safe deque
+            self._device_error_count = 0
+            self._last_memory_log_chunk_count = 0
             
             def record_audio():
-                try:
-                    # Resolve device name to device ID to handle multiple devices with same name
-                    actual_device = self._resolve_device_id(self.device)
-                    
-                    logger.debug(f"Starting recording thread with device={self.device} (using actual_device={actual_device}), "
-                                f"sample_rate={self.sample_rate}, channels={self.channels}")
-                    
-                    # Additional debug info for device that will be used
+                retry_count = 0
+                max_retries = self._max_device_retries
+                
+                while self.recording and retry_count < max_retries:
                     try:
-                        if actual_device is None:
-                            default_device_idx = sd.default.device[0]
-                            if default_device_idx is not None:
-                                device_info = sd.query_devices(default_device_idx)
-                                logger.debug(f"Recording with default device: {device_info['name']}")
-                                logger.debug(f"Device details: {device_info}")
-                                
-                                # Validate sample rate for default device
-                                if self.sample_rate != int(device_info.get('default_samplerate', 44100)):
-                                    logger.warning(f"Default device prefers sample rate {device_info.get('default_samplerate')}Hz, "
-                                                 f"but configured for {self.sample_rate}Hz. This may cause issues.")
-                        else:
-                            device_info = sd.query_devices(actual_device)
-                            logger.debug(f"Recording with device: {device_info['name']}")
-                            logger.debug(f"Device details: {device_info}")
-                    except Exception as e:
-                        logger.error(f"Error getting device info: {e}")
-                    
-                    # Start the recording stream
-                    with sd.InputStream(samplerate=self.sample_rate,
-                                       channels=self.channels,
-                                       device=actual_device,
-                                       callback=self._audio_callback):
-                        logger.info("Started recording")
+                        # Resolve device name to device ID to handle multiple devices with same name
+                        actual_device = self._resolve_device_id(self.device)
                         
-                        # Stay in this loop until recording is set to False
-                        while self.recording:
-                            time.sleep(0.1)
+                        logger.debug(f"Starting recording thread with device={self.device} (using actual_device={actual_device}), "
+                                    f"sample_rate={self.sample_rate}, channels={self.channels}")
+                        
+                        # Additional debug info for device that will be used
+                        try:
+                            if actual_device is None:
+                                default_device_idx = sd.default.device[0]
+                                if default_device_idx is not None:
+                                    device_info = sd.query_devices(default_device_idx)
+                                    logger.debug(f"Recording with default device: {device_info['name']}")
+                                    logger.debug(f"Device details: {device_info}")
+                                    
+                                    # Validate sample rate for default device
+                                    if self.sample_rate != int(device_info.get('default_samplerate', 44100)):
+                                        logger.warning(f"Default device prefers sample rate {device_info.get('default_samplerate')}Hz, "
+                                                     f"but configured for {self.sample_rate}Hz. This may cause issues.")
+                            else:
+                                device_info = sd.query_devices(actual_device)
+                                logger.debug(f"Recording with device: {device_info['name']}")
+                                logger.debug(f"Device details: {device_info}")
+                        except Exception as e:
+                            logger.error(f"Error getting device info: {e}")
+                        
+                        # Start the recording stream
+                        with sd.InputStream(samplerate=self.sample_rate,
+                                           channels=self.channels,
+                                           device=actual_device,
+                                           callback=self._audio_callback):
+                            logger.info("Started recording")
+                            retry_count = 0  # Reset retry count on successful stream start
                             
-                except Exception as e:
-                    logger.error(f"Error during recording: {e}", exc_info=True)
-                    self.recording = False
+                            # Stay in this loop until recording is set to False
+                            while self.recording:
+                                time.sleep(0.1)
+                        
+                        # If we get here normally, exit the retry loop
+                        break
+                                
+                    except sd.PortAudioError as e:
+                        # Device disconnection or similar error
+                        logger.warning(f"PortAudio error during recording (device may be disconnected): {e}")
+                        retry_count += 1
+                        self._device_error_count += 1
+                        
+                        if self.recording and retry_count < max_retries:
+                            logger.info(f"Attempting to recover recording (retry {retry_count}/{max_retries})...")
+                            # Wait for device to potentially reconnect
+                            time.sleep(self._device_retry_delay * retry_count)
+                            # Refresh device list
+                            self._refresh_device_list()
+                        else:
+                            logger.error("Max retries reached or recording stopped, giving up")
+                            self.recording = False
+                            
+                    except Exception as e:
+                        logger.error(f"Error during recording: {e}", exc_info=True)
+                        self.recording = False
+                        break
             
             # Start recording in a separate thread
             self._record_thread = threading.Thread(target=record_audio, daemon=True)
@@ -256,12 +376,18 @@ class AudioRecorder:
                 self._record_thread = None
             
             # Check if we have any audio data
-            if not self._audio_data or len(self._audio_data) == 0:
+            if len(self._audio_data) == 0:
                 logger.warning("No audio data recorded")
+                self._clear_audio_buffer()
                 return None
             
-            # Concatenate all audio chunks
-            audio_data = np.concatenate(self._audio_data, axis=0)
+            # Concatenate all audio chunks - thread-safe conversion from deque to list
+            try:
+                audio_data = np.concatenate(list(self._audio_data), axis=0)
+            except Exception as e:
+                logger.error(f"Error concatenating audio data: {e}")
+                self._clear_audio_buffer()
+                return None
             
             # Debug information about the recorded audio
             duration = len(audio_data) / self.sample_rate
@@ -272,6 +398,18 @@ class AudioRecorder:
             audio_max = np.max(audio_data)
             audio_mean = np.mean(np.abs(audio_data))
             logger.debug(f"Audio levels - min: {audio_min:.6f}, max: {audio_max:.6f}, mean: {audio_mean:.6f}")
+            
+            # Cache the recording info before clearing the buffer
+            self._last_recording_info_cache = {
+                "duration_seconds": duration,
+                "sample_rate": self.sample_rate,
+                "channels": self.channels,
+                "samples": len(audio_data),
+                "min_amplitude": float(audio_min),
+                "max_amplitude": float(audio_max),
+                "mean_amplitude": float(audio_mean),
+                "is_silent": float(audio_mean) < 0.001
+            }
             
             if audio_mean < 0.001:
                 logger.warning("Audio recording appears to be very quiet or silent")
@@ -291,27 +429,94 @@ class AudioRecorder:
                     wf.writeframes(audio_data_int.tobytes())
                 
                 logger.info(f"Saved recording to {filename}")
+                
+                # MEMORY LEAK FIX: Clear the audio buffer after successful save
+                self._clear_audio_buffer()
+                
                 return filename
                 
             except Exception as e:
                 logger.error(f"Error saving audio file: {e}", exc_info=True)
+                # Still clear the buffer to prevent memory leak even on error
+                self._clear_audio_buffer()
                 return None
     
+    def _clear_audio_buffer(self):
+        """Clear the audio data buffer to free memory."""
+        if self._audio_data:
+            chunk_count = len(self._audio_data)
+            self._audio_data.clear()
+            self._audio_data = deque()  # Ensure new deque object for GC
+            logger.debug(f"Cleared audio buffer ({chunk_count} chunks freed)")
+    
+    def _log_memory_usage(self, chunk_count: int):
+        """Log approximate memory usage of the audio buffer."""
+        try:
+            # Estimate memory usage
+            # Each chunk is typically (frames, channels) float32 array
+            # At 16kHz, ~0.1s per chunk = 1600 samples * 4 bytes = 6.4KB per chunk
+            estimated_chunk_size_bytes = 1600 * self.channels * 4  # float32 = 4 bytes
+            
+            memory_in_buffer_mb = (len(self._audio_data) * estimated_chunk_size_bytes) / (1024 * 1024)
+            
+            duration_seconds = chunk_count * 0.1  # ~0.1s per chunk
+            duration_minutes = duration_seconds / 60
+            
+            logger.info(f"Recording stats: {duration_minutes:.1f} min, "
+                       f"~{memory_in_buffer_mb:.1f}MB in memory, "
+                       f"{chunk_count} total chunks")
+            
+            # Also log actual process memory if available
+            try:
+                import resource
+                rusage = resource.getrusage(resource.RUSAGE_SELF)
+                # On macOS, ru_maxrss is in bytes; on Linux it's in KB
+                if sys.platform == 'darwin':
+                    rss_mb = rusage.ru_maxrss / (1024 * 1024)
+                else:
+                    rss_mb = rusage.ru_maxrss / 1024
+                logger.info(f"Process memory (RSS): ~{rss_mb:.1f}MB")
+            except ImportError:
+                pass  # resource module not available on Windows
+        except Exception as e:
+            logger.debug(f"Error logging memory usage: {e}")
+    
     def _audio_callback(self, indata, frames, time_info, status):
-        """Callback function for the InputStream."""
+        """Callback function for the InputStream.
+        
+        Handles device errors gracefully to support device disconnection scenarios.
+        Thread-safe: uses deque for append operations.
+        """
         if status:
             logger.warning(f"Audio callback status: {status}")
+            # Track device errors for resilience
+            if 'input' in str(status).lower() or 'underflow' in str(status).lower():
+                self._device_error_count += 1
+                if self._device_error_count > 10:
+                    logger.error("Too many device errors, device may be disconnected")
         
-        # Append the audio data
-        self._audio_data.append(indata.copy())
-        
-        # Periodically log audio levels for debugging
-        if len(self._audio_data) % 10 == 0:  # Log every ~1 second
-            latest_audio = indata.copy()
-            audio_min = np.min(latest_audio)
-            audio_max = np.max(latest_audio)
-            audio_mean = np.mean(np.abs(latest_audio))
-            logger.debug(f"Current audio frame - min: {audio_min:.6f}, max: {audio_max:.6f}, mean: {audio_mean:.6f}")
+        try:
+            audio_chunk = indata.copy()
+            
+            # Thread-safe append to deque
+            self._audio_data.append(audio_chunk)
+            
+            current_chunk_count = len(self._audio_data)
+            
+            # Memory logging at intervals
+            if current_chunk_count - self._last_memory_log_chunk_count >= MEMORY_LOG_INTERVAL_CHUNKS:
+                self._log_memory_usage(current_chunk_count)
+                self._last_memory_log_chunk_count = current_chunk_count
+            
+            # Periodically log audio levels for debugging (every ~10 seconds)
+            if current_chunk_count % 100 == 0:
+                audio_min = np.min(audio_chunk)
+                audio_max = np.max(audio_chunk)
+                audio_mean = np.mean(np.abs(audio_chunk))
+                logger.debug(f"Current audio frame - min: {audio_min:.6f}, max: {audio_max:.6f}, mean: {audio_mean:.6f}")
+                logger.debug(f"Audio buffer size: {len(self._audio_data)} chunks in memory")
+        except Exception as e:
+            logger.error(f"Error in audio callback: {e}")
     
     def get_last_recording_duration(self) -> float:
         """Get the duration of the last recording in seconds.
@@ -320,6 +525,11 @@ class AudioRecorder:
             float: Duration in seconds or 0 if no recording available
         """
         try:
+            # First check the cache (available after recording is saved)
+            if self._last_recording_info_cache:
+                return self._last_recording_info_cache.get("duration_seconds", 0)
+            
+            # Fallback to calculating from buffer (during active recording)
             if not self._audio_data:
                 return 0
                 
@@ -337,11 +547,17 @@ class AudioRecorder:
             dict: Recording information or empty dict if no recording available
         """
         try:
+            # First check the cache (available after recording is saved)
+            if self._last_recording_info_cache:
+                return self._last_recording_info_cache.copy()
+            
+            # Fallback to calculating from buffer (during active recording)
             if not self._audio_data:
                 return {}
                 
-            # Calculate some basic audio statistics
-            audio_data = np.concatenate(self._audio_data, axis=0)
+            # Calculate some basic audio statistics from in-memory data
+            # Thread-safe: convert deque to list before concatenation
+            audio_data = np.concatenate(list(self._audio_data), axis=0)
             return {
                 "duration_seconds": len(audio_data) / self.sample_rate,
                 "sample_rate": self.sample_rate,

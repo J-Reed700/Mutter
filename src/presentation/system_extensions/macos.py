@@ -25,31 +25,58 @@ class MacOSSystemExtension:
             try:
                 result = subprocess.run(['osascript', '-e', check_script], 
                                      capture_output=True, 
-                                     text=True, 
-                                     check=True)
+                                     text=True)
                 return "true" in result.stdout.lower()
-            except:
-                return Fals
+            except subprocess.CalledProcessError:
+                return False
+
         def request_accessibility_permissions():
             """Show dialog to request accessibility permissions"""
-            dialog_script = '''
-                tell application "System Preferences"
+            # First, try to open System Settings directly to Accessibility
+            settings_script = '''
+                tell application "System Settings"
                     activate
-                    set current pane to pane "com.apple.preference.security"
+                    delay 0.5
+                    set current pane to pane id "com.apple.preference.security"
+                    delay 0.5
                     reveal anchor "Privacy_Accessibility"
                 end tell
-                display dialog "Mutter needs Accessibility permissions to auto-paste text. Please enable it in System Settings > Privacy & Security > Accessibility." buttons {"Open Settings", "Cancel"} default button "Open Settings"
             '''
+            
+            # Then show a more detailed dialog
+            dialog_script = '''
+                display dialog "Mutter needs Accessibility permission to auto-paste text." & return & return & ¬
+                    "To enable:" & return & ¬
+                    "1. Click the lock icon 🔒 in System Settings" & return & ¬
+                    "2. Find and enable Mutter in the list" & return & ¬
+                    "3. Try auto-paste again" ¬
+                    with title "Enable Auto-Paste" ¬
+                    with icon caution ¬
+                    buttons {"Open Settings", "Cancel"} ¬
+                    default button "Open Settings"
+            '''
+            
             try:
+                # First open System Settings
+                subprocess.run(['osascript', '-e', settings_script], check=True)
+                # Then show the dialog
                 subprocess.run(['osascript', '-e', dialog_script], check=True)
-            except:
-                logger.error("Failed to show accessibility permission dialog")
+                logger.info("Showed accessibility permission request dialog")
+                return True
+            except subprocess.CalledProcessError as e:
+                logger.error(f"Failed to show accessibility permission dialog: {e}")
+                return False
                 
-        # Check if we have accessibility permissions
+        # First check if we have accessibility permissions
         if not check_accessibility_permissions():
             logger.warning("No accessibility permissions, requesting from user")
-            request_accessibility_permissions()
-            return
+            if request_accessibility_permissions():
+                # Return early since user needs to grant permissions first
+                return
+            else:
+                logger.error("Failed to request accessibility permissions")
+                return
+        
         # Give a small delay for UI to stabilize
         time.sleep(0.5)
         
@@ -65,9 +92,10 @@ class MacOSSystemExtension:
             subprocess.run(['osascript', '-e', paste_script], check=True)
             logger.debug("Auto-paste keystrokes sent via AppleScript")
         except subprocess.CalledProcessError as e:
+            error_msg = str(e).lower()
             logger.error(f"Failed to send keystrokes via AppleScript: {e}")
             # If we get a permission error, request permissions
-            if "not allowed assistive access" in str(e).lower():
+            if "not allowed assistive access" in error_msg or "not allowed to send keystrokes" in error_msg:
                 request_accessibility_permissions()
         except Exception as e:
             logger.error(f"Error executing AppleScript: {e}")

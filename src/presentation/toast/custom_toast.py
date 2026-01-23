@@ -2,6 +2,7 @@ import logging
 from PySide6.QtWidgets import QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QApplication
 from PySide6.QtGui import QPixmap, QPainter, QColor, QFont
 from PySide6.QtCore import Qt, QTimer
+import platform
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,19 @@ class CustomToast(QWidget):
     """Custom toast notification that's less intrusive than system notifications"""
     
     def __init__(self, parent=None):
-        super().__init__(parent, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        # Initialize with appropriate flags for the platform
+        if platform.system() == 'Darwin':
+            super().__init__(parent)
+            # Set window flags for macOS
+            self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+            # Set attributes for macOS
+            self.setAttribute(Qt.WA_ShowWithoutActivating)
+            self.setAttribute(Qt.WA_MacAlwaysShowToolWindow)
+            self.setAttribute(Qt.WA_TranslucentBackground)
+            self.setAttribute(Qt.WA_NoSystemBackground)
+        else:
+            super().__init__(parent, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+            
         self.setStyleSheet("""
             QWidget#toastWidget {
                 background: rgba(45, 45, 60, 0.97);
@@ -104,13 +117,19 @@ class CustomToast(QWidget):
         # Set up auto-hide timer
         self.hide_timer = QTimer(self)
         self.hide_timer.setSingleShot(True)
-        self.hide_timer.timeout.connect(self.hide)
+        self.hide_timer.timeout.connect(self._safe_hide)
         
         # Animation properties
         self.opacity = 0.0
         self.animation_timer = QTimer(self)
         self.animation_timer.timeout.connect(self._animate_appearance)
         self.animation_step = 0
+        
+        # Fade-out animation timer (separate from appearance animation)
+        self.fadeout_timer = QTimer(self)
+        self.fadeout_timer.setSingleShot(True)
+        self.fadeout_timer.timeout.connect(self._fadeout_step)
+        self.fadeout_step_count = 0
         
         # Initialize size
         self.setFixedSize(280, 80)
@@ -121,6 +140,7 @@ class CustomToast(QWidget):
         # Track toast state
         self.is_active = False
         self.current_flash_timer = None
+        self._is_closing = False  # Prevent re-entry during close
 
     def _animate_appearance(self):
         """Animate the appearance of the toast with a subtle fade-in effect"""
@@ -135,7 +155,8 @@ class CustomToast(QWidget):
             self.animation_timer.stop()
             self.setWindowOpacity(0.95)  # Final opacity
             # Ensure visibility by bringing to front and raising
-            self.activateWindow()
+            if platform.system() != 'Darwin':
+                self.activateWindow()  # Skip activation on macOS
             self.raise_()
             return
 
@@ -178,20 +199,44 @@ class CustomToast(QWidget):
 
     def force_close(self):
         """Force close any active toast immediately"""
-        if self.is_active:
+        if self.is_active or self._is_closing:
             logger.debug("Force closing active toast")
-            # Stop any ongoing timers
-            if self.hide_timer.isActive():
+            self._stop_all_timers()
+            
+            # Actually hide the toast
+            self._is_closing = True
+            try:
+                super().hide()
+            finally:
+                self.is_active = False
+                self._is_closing = False
+            logger.debug("Toast closed")
+    
+    def _stop_all_timers(self):
+        """Stop all timers to prevent memory leaks and orphaned callbacks."""
+        try:
+            if self.hide_timer and self.hide_timer.isActive():
                 self.hide_timer.stop()
-            if self.animation_timer.isActive():
+        except RuntimeError:
+            pass  # Timer may already be deleted
+        
+        try:
+            if self.animation_timer and self.animation_timer.isActive():
                 self.animation_timer.stop()
+        except RuntimeError:
+            pass
+        
+        try:
+            if self.fadeout_timer and self.fadeout_timer.isActive():
+                self.fadeout_timer.stop()
+        except RuntimeError:
+            pass
+        
+        try:
             if self.current_flash_timer and self.current_flash_timer.isActive():
                 self.current_flash_timer.stop()
-                
-            # Actually hide the toast
-            self.hide()
-            self.is_active = False
-            logger.debug("Toast closed")
+        except (RuntimeError, AttributeError):
+            pass
 
     def show_toast(self, title, message, duration=3500, icon_type="info"):
         """Show the toast notification with animation
@@ -219,73 +264,27 @@ class CustomToast(QWidget):
         
         # Position in the bottom-right corner of the screen
         screen_rect = QApplication.primaryScreen().availableGeometry()
-        toast_x = screen_rect.right() - self.width() - 20  # 20px from right edge
-        toast_y = screen_rect.bottom() - self.height() - 20  # 20px from bottom edge
-        self.move(toast_x, toast_y)
         
-        # Use strong window flags to ensure visibility
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | 
-                           Qt.Tool | Qt.X11BypassWindowManagerHint)
+        # On macOS, position slightly higher to avoid the Dock
+        if platform.system() == 'Darwin':
+            toast_x = screen_rect.right() - self.width() - 20  # 20px from right edge
+            toast_y = screen_rect.bottom() - self.height() - 40  # 40px from bottom edge to avoid Dock
+        else:
+            toast_x = screen_rect.right() - self.width() - 20  # 20px from right edge
+            toast_y = screen_rect.bottom() - self.height() - 20  # 20px from bottom edge
+        
+        self.move(toast_x, toast_y)
         
         # Set initial opacity for animation
         self.setWindowOpacity(0.0)
         
-        # Modern style with gradient and subtle shadow effect
-        bright_style = f"""
-            QWidget#toastWidget {{
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                      stop:0 rgba(55, 55, 75, 0.97),
-                                      stop:1 rgba(45, 45, 60, 0.97));
-                border-radius: 12px;
-                border: 1px solid rgba(160, 160, 200, 0.5);
-                color: white;
-            }}
-            QLabel#titleLabel {{
-                color: #ffffff;
-                font-size: 14px;
-                font-weight: bold;
-                padding: 4px 2px 2px 2px;
-                background-color: transparent;
-            }}
-            QLabel#messageLabel {{
-                color: #ffffff;
-                font-size: 13px;
-                padding: 2px 4px 4px 2px;
-                background-color: transparent;
-            }}
-            QLabel#iconLabel {{
-                background-color: transparent;
-            }}
-            QPushButton#closeButton {{
-                border: none;
-                background-color: transparent;
-                color: rgba(220, 220, 220, 0.8);
-                padding: 4px;
-                font-size: 16px;
-                font-weight: bold;
-            }}
-            QPushButton#closeButton:hover {{
-                color: white;
-            }}
-        """
-        self.setStyleSheet(bright_style)
-        
         # Show toast and force it to be visible
         self.show()
         self.raise_()
-        self.activateWindow()
         
         # Start appearance animation
         self.animation_step = 0
-        self.animation_timer.start(30)  # 30ms for smoother animation
-        
-        # Flash the window for attention on Windows
-        if HAS_WIN32GUI:
-            try:
-                hwnd = int(self.winId())
-                win32gui.FlashWindow(hwnd, True)  # Flash the taskbar icon
-            except Exception as e:
-                logger.debug(f"Failed to flash window: {e}")
+        self.animation_timer.start(30)
         
         # Start auto-hide timer
         self.hide_timer.start(duration)
@@ -293,14 +292,74 @@ class CustomToast(QWidget):
         # Log for debugging
         logger.info(f"Toast notification displayed (duration: {duration}ms)")
 
+    def _safe_hide(self):
+        """Safe wrapper for hide that handles re-entry."""
+        if not self._is_closing:
+            self.hide()
+    
     def hide(self):
         """Override hide to track state and add fade-out animation"""
-        # Animate fade-out
-        for opacity in [0.8, 0.6, 0.4, 0.2, 0.0]:
-            self.setWindowOpacity(opacity)
-            QApplication.processEvents()  # Allow UI to update
-            QTimer.singleShot(20, lambda: None)  # Short delay for animation
+        if self._is_closing:
+            return
         
-        super().hide()
+        self._is_closing = True
+        self._stop_all_timers()
+        
+        # Start async fade-out animation
+        self.fadeout_step_count = 0
+        self._fadeout_step()
+    
+    def _fadeout_step(self):
+        """Perform one step of the fadeout animation."""
+        opacity_levels = [0.8, 0.6, 0.4, 0.2, 0.0]
+        
+        if self.fadeout_step_count < len(opacity_levels):
+            try:
+                self.setWindowOpacity(opacity_levels[self.fadeout_step_count])
+                self.fadeout_step_count += 1
+                # Schedule next step
+                self.fadeout_timer.start(20)  # 20ms between steps
+            except RuntimeError:
+                # Widget may have been deleted
+                self._finish_hide()
+        else:
+            self._finish_hide()
+    
+    def _finish_hide(self):
+        """Complete the hide operation."""
+        try:
+            super().hide()
+        except RuntimeError:
+            pass  # Widget may have been deleted
+        finally:
+            self.is_active = False
+            self._is_closing = False
+            logger.debug("Toast hidden")
+    
+    def cleanup(self):
+        """Clean up all resources. Call this before application shutdown."""
+        logger.debug("Cleaning up CustomToast resources")
+        self._stop_all_timers()
         self.is_active = False
-        logger.debug("Toast hidden")
+        self._is_closing = False
+        
+        # Explicitly delete timers
+        try:
+            self.hide_timer.deleteLater()
+        except (RuntimeError, AttributeError):
+            pass
+        
+        try:
+            self.animation_timer.deleteLater()
+        except (RuntimeError, AttributeError):
+            pass
+        
+        try:
+            self.fadeout_timer.deleteLater()
+        except (RuntimeError, AttributeError):
+            pass
+    
+    def closeEvent(self, event):
+        """Handle close event to ensure proper cleanup."""
+        self._stop_all_timers()
+        super().closeEvent(event)

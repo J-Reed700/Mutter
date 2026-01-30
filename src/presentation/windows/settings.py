@@ -4,7 +4,8 @@ from PySide6.QtWidgets import (
     QGroupBox, QFormLayout, QSpinBox, QCheckBox,
     QKeySequenceEdit, QDialog, QSlider, QFrame,
     QApplication, QStyle, QSizePolicy, QMessageBox,
-    QButtonGroup, QRadioButton, QScrollArea, QProgressBar
+    QButtonGroup, QRadioButton, QScrollArea, QProgressBar,
+    QTextEdit, QLineEdit
 )
 from PySide6.QtCore import Qt, Slot, Signal, QTimer, QEvent
 from PySide6.QtGui import QKeySequence, QFont, QIcon, QPixmap
@@ -96,7 +97,7 @@ class SettingsWindow(QMainWindow):
         tabs.addTab(self._create_hotkeys_tab(), "Hotkeys")
         tabs.addTab(self._create_audio_tab(), "Audio")
         tabs.addTab(self._create_transcription_tab(), "Transcription")
-        # tabs.addTab(self._create_llm_tab(), "LLM Processing")
+        tabs.addTab(self._create_llm_tab(), "LLM Processing")
         tabs.addTab(self._create_appearance_tab(), "Appearance")
         
         # Add bottom buttons
@@ -355,35 +356,15 @@ class SettingsWindow(QMainWindow):
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(15, 15, 15, 15)
-        layout.setSpacing(15)  # Increase spacing between groups
+        layout.setSpacing(15)
         
         # Help text at the top
         help_label = QLabel(
-            "Configure LLM processing for transcriptions. "
-            "You can use either the built-in LLM or connect to an external LLM server."
-            "Please note that these are experimental features and may not work as expected."
+            "Process transcriptions with an LLM to fix grammar, summarize, or transform text. "
+            "Use {text} in your prompt as a placeholder for the transcribed text."
         )
         help_label.setWordWrap(True)
         layout.addWidget(help_label)
-        
-        # Add a progress bar for model downloading (hidden by default)
-        self.download_group = QGroupBox("Model Download Status")
-        download_layout = QVBoxLayout(self.download_group)
-        download_layout.setContentsMargins(15, 20, 15, 15)
-        download_layout.setSpacing(10)
-        
-        self.download_status_label = QLabel("No download in progress")
-        self.download_status_label.setWordWrap(True)
-        download_layout.addWidget(self.download_status_label)
-        
-        self.download_progress = QProgressBar()
-        self.download_progress.setRange(0, 100)
-        self.download_progress.setValue(0)
-        download_layout.addWidget(self.download_progress)
-        
-        # Add the download group to the layout but hide it initially
-        layout.addWidget(self.download_group)
-        self.download_group.setVisible(False)
         
         # LLM Enable/Disable
         enable_group = QGroupBox("Enable LLM Processing")
@@ -391,67 +372,52 @@ class SettingsWindow(QMainWindow):
         enable_layout.setContentsMargins(15, 20, 15, 15)
         enable_layout.setSpacing(10)
         
-        self.llm_enabled_check = QCheckBox("Enable LLM processing")
+        self.llm_enabled_check = QCheckBox("Enable LLM processing after transcription")
         self.llm_enabled_check.setChecked(self.settings.llm.enabled)
         self.llm_enabled_check.toggled.connect(self._on_llm_enabled_toggled)
         self.llm_enabled_check.toggled.connect(self._mark_settings_changed)
         enable_layout.addRow("", self.llm_enabled_check)
         
-        enable_desc = QLabel("Process transcriptions with an LLM to summarize or extract key points")
-        enable_desc.setStyleSheet("color: #666666; font-size: 12px;")
-        enable_layout.addRow("", enable_desc)
-        
         layout.addWidget(enable_group)
         
-        # --------- LLM Mode selection (embedded vs external) ----------
-        # Changed to use separate groups for clearer organization
-        
-        # Mode selection (radio buttons only)
-        mode_group = QGroupBox("LLM Mode")
-        mode_layout = QVBoxLayout(mode_group)
+        # Mode selection (radio buttons)
+        self.mode_group = QGroupBox("LLM Mode")
+        mode_layout = QVBoxLayout(self.mode_group)
         mode_layout.setContentsMargins(15, 20, 15, 15)
         mode_layout.setSpacing(10)
         
-        self.llm_mode_group = QButtonGroup(self)
-        self.embedded_radio = QRadioButton("Use built-in LLM (no setup required)")
-        self.external_radio = QRadioButton("Use external LLM server")
+        self.llm_mode_button_group = QButtonGroup(self)
+        self.embedded_radio = QRadioButton("Use built-in LLM (coming soon)")
+        self.external_radio = QRadioButton("Use external LLM server (Ollama, LM Studio, etc.)")
         
         # Set the initial state based on settings
-        if hasattr(self.settings.llm, 'use_embedded_model'):
-            self.embedded_radio.setChecked(self.settings.llm.use_embedded_model)
-            self.external_radio.setChecked(not self.settings.llm.use_embedded_model)
-        else:
+        if hasattr(self.settings.llm, 'use_embedded_model') and self.settings.llm.use_embedded_model:
             self.embedded_radio.setChecked(True)
-            self.external_radio.setChecked(False)
+        else:
+            self.external_radio.setChecked(True)
         
-        self.llm_mode_group.addButton(self.embedded_radio)
-        self.llm_mode_group.addButton(self.external_radio)
+        self.llm_mode_button_group.addButton(self.embedded_radio)
+        self.llm_mode_button_group.addButton(self.external_radio)
         
         mode_layout.addWidget(self.embedded_radio)
         mode_layout.addWidget(self.external_radio)
         
-        layout.addWidget(mode_group)
+        layout.addWidget(self.mode_group)
         
-        # ---------- Embedded Model Settings (separate group) ----------
-        embedded_group = QGroupBox("Built-in Model Settings")
-        embedded_layout = QFormLayout(embedded_group)
+        # ---------- Embedded Model Settings ----------
+        self.embedded_group = QGroupBox("Built-in Model Settings")
+        embedded_layout = QFormLayout(self.embedded_group)
         embedded_layout.setContentsMargins(15, 20, 15, 15)
         embedded_layout.setSpacing(10)
         
         self.embedded_model_combo = QComboBox()
         self.embedded_model_combo.addItems([
-            "facebook/distilbart-cnn-12-6",
-            "sshleifer/distilbart-xsum-12-3",
-            "google/flan-t5-small",
-            "facebook/bart-large-cnn",
-            "philschmid/distilbart-cnn-12-6-samsum"
+            "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+            "microsoft/Phi-3-mini-4k-instruct-gguf",
+            "TheBloke/Llama-2-7B-Chat-GGUF",
         ])
         self.embedded_model_combo.setMinimumWidth(300)
         self.embedded_model_combo.setMinimumHeight(30)
-        # Fix dropdown width when shown
-        self.embedded_model_combo.view().setTextElideMode(Qt.ElideNone)
-        self.embedded_model_combo.installEventFilter(self)
-        self.embedded_model_combo.activated.connect(lambda: self._resize_combo_popup(self.embedded_model_combo))
         
         # Set current embedded model
         if hasattr(self.settings.llm, 'embedded_model_name') and self.settings.llm.embedded_model_name:
@@ -459,174 +425,153 @@ class SettingsWindow(QMainWindow):
             if index >= 0:
                 self.embedded_model_combo.setCurrentIndex(index)
             else:
-                # If not found, set the first item
-                self.embedded_model_combo.setCurrentIndex(0)
-        else:
-            # Default to first item if no setting
-            self.embedded_model_combo.setCurrentIndex(0)
+                self.embedded_model_combo.addItem(self.settings.llm.embedded_model_name)
+                self.embedded_model_combo.setCurrentIndex(self.embedded_model_combo.count() - 1)
         
         self.embedded_model_combo.currentIndexChanged.connect(self._mark_settings_changed)
-        
         embedded_layout.addRow("Model:", self.embedded_model_combo)
         
-        embedded_desc = QLabel("Built-in models work immediately without additional setup but use more memory.\nT5 models (t5-small, flan-t5-small) are better at handling custom prompts.")
-        embedded_desc.setStyleSheet("color: #666666; font-size: 12px;")
-        embedded_desc.setWordWrap(True)
-        embedded_layout.addRow("", embedded_desc)
-        
-        # Add download button for embedded models
-        self.download_model_button = QPushButton("Download Selected Model")
-        self.download_model_button.setToolTip("Download the selected model now instead of waiting for first use")
-        self.download_model_button.clicked.connect(self._download_selected_model)
+        # Placeholder download button
+        self.download_model_button = QPushButton("Download Model (Coming Soon)")
+        self.download_model_button.setEnabled(False)
+        self.download_model_button.setToolTip("Embedded model support is not yet implemented")
         embedded_layout.addRow("", self.download_model_button)
         
-        layout.addWidget(embedded_group)
+        embedded_note = QLabel("Note: Built-in model support is coming soon. Use an external server for now.")
+        embedded_note.setStyleSheet("color: #666666; font-size: 12px; font-style: italic;")
+        embedded_note.setWordWrap(True)
+        embedded_layout.addRow("", embedded_note)
         
-        # ---------- External Server Settings (separate group) ----------
-        external_group = QGroupBox("External LLM Server Settings")
-        external_layout = QFormLayout(external_group)
+        layout.addWidget(self.embedded_group)
+        
+        # ---------- External Server Settings ----------
+        self.external_group = QGroupBox("External LLM Server")
+        external_layout = QFormLayout(self.external_group)
         external_layout.setContentsMargins(15, 20, 15, 15)
         external_layout.setSpacing(10)
         
-        self.llm_api_url_edit = QComboBox()
-        self.llm_api_url_edit.setEditable(True)
+        self.llm_api_url_edit = QLineEdit()
         self.llm_api_url_edit.setMinimumWidth(300)
         self.llm_api_url_edit.setMinimumHeight(30)
-        # Fix dropdown width when shown
-        self.llm_api_url_edit.view().setTextElideMode(Qt.ElideNone)
-        self.llm_api_url_edit.installEventFilter(self)
-        self.llm_api_url_edit.addItems([
-            "http://localhost:8080/v1",
-            "http://localhost:11434/v1",
-            "http://localhost:5000/v1",
-        ])
+        self.llm_api_url_edit.setPlaceholderText("http://localhost:11434/v1")
         
         # Set the current API URL
         if hasattr(self.settings.llm, 'api_url') and self.settings.llm.api_url:
-            # First check if it's in the list
-            index = self.llm_api_url_edit.findText(self.settings.llm.api_url)
-            if index >= 0:
-                self.llm_api_url_edit.setCurrentIndex(index)
-            else:
-                # If not found in the list, just set the text directly
-                self.llm_api_url_edit.setCurrentText(self.settings.llm.api_url)
+            self.llm_api_url_edit.setText(self.settings.llm.api_url)
         else:
-            # Default to first item
-            self.llm_api_url_edit.setCurrentIndex(0)
+            self.llm_api_url_edit.setText("http://localhost:11434/v1")
         
-        # Connect both signals for editable combo box
-        self.llm_api_url_edit.currentTextChanged.connect(self._mark_settings_changed)
-        self.llm_api_url_edit.activated.connect(lambda: self._resize_combo_popup(self.llm_api_url_edit))
-        self.llm_api_url_edit.editTextChanged.connect(self._mark_settings_changed)
+        self.llm_api_url_edit.textChanged.connect(self._mark_settings_changed)
         external_layout.addRow("API URL:", self.llm_api_url_edit)
         
-        self.llm_model_edit = QComboBox()
-        self.llm_model_edit.setEditable(True)
-        self.llm_model_edit.setMinimumWidth(300)
-        self.llm_model_edit.setMinimumHeight(30)
-        # Fix dropdown width when shown
-        self.llm_model_edit.view().setTextElideMode(Qt.ElideNone)
-        self.llm_model_edit.installEventFilter(self)
-        self.llm_model_edit.addItems([
-            "llama3",
-            "mistral",
-            "codellama",
-            "phi3",
-            "mixtral"
-        ])
+        # Model dropdown (populated by Test Connection)
+        self.llm_model_combo = QComboBox()
+        self.llm_model_combo.setEditable(True)  # Allow custom model names
+        self.llm_model_combo.setMinimumWidth(300)
+        self.llm_model_combo.setMinimumHeight(30)
+        self.llm_model_combo.lineEdit().setPlaceholderText("Click 'Test Connection' to load models")
         
-        # Set the current model
         if hasattr(self.settings.llm, 'model') and self.settings.llm.model:
-            # First check if it's in the list
-            index = self.llm_model_edit.findText(self.settings.llm.model)
-            if index >= 0:
-                self.llm_model_edit.setCurrentIndex(index)
-            else:
-                # If not found in the list, just set the text directly
-                self.llm_model_edit.setCurrentText(self.settings.llm.model)
-        else:
-            # Default to first item
-            self.llm_model_edit.setCurrentIndex(0)
+            self.llm_model_combo.addItem(self.settings.llm.model)
+            self.llm_model_combo.setCurrentText(self.settings.llm.model)
         
-        # Connect both signals for editable combo box
-        self.llm_model_edit.currentTextChanged.connect(self._mark_settings_changed)
-        self.llm_model_edit.activated.connect(lambda: self._resize_combo_popup(self.llm_model_edit))
-        self.llm_model_edit.editTextChanged.connect(self._mark_settings_changed)
-        external_layout.addRow("Model:", self.llm_model_edit)
+        self.llm_model_combo.currentTextChanged.connect(self._mark_settings_changed)
+        external_layout.addRow("Model:", self.llm_model_combo)
         
-        # Test LLM Connection button
-        test_button = QPushButton("Test Connection")
-        test_button.setStyleSheet("padding: 5px 10px;")
+        # Authentication fields (for reverse proxy like Pangolin)
+        auth_label = QLabel("Authentication (optional, for reverse proxy)")
+        auth_label.setStyleSheet("color: #666666; font-size: 12px; margin-top: 10px;")
+        external_layout.addRow("", auth_label)
+        
+        self.llm_username_edit = QLineEdit()
+        self.llm_username_edit.setMinimumWidth(300)
+        self.llm_username_edit.setMinimumHeight(30)
+        self.llm_username_edit.setPlaceholderText("Username (leave empty if not required)")
+        
+        if hasattr(self.settings.llm, 'api_username') and self.settings.llm.api_username:
+            self.llm_username_edit.setText(self.settings.llm.api_username)
+        
+        self.llm_username_edit.textChanged.connect(self._mark_settings_changed)
+        external_layout.addRow("Username:", self.llm_username_edit)
+        
+        self.llm_password_edit = QLineEdit()
+        self.llm_password_edit.setMinimumWidth(300)
+        self.llm_password_edit.setMinimumHeight(30)
+        self.llm_password_edit.setPlaceholderText("Password (leave empty if not required)")
+        self.llm_password_edit.setEchoMode(QLineEdit.Password)  # Hide password
+        
+        if hasattr(self.settings.llm, 'api_password') and self.settings.llm.api_password:
+            self.llm_password_edit.setText(self.settings.llm.api_password)
+        
+        self.llm_password_edit.textChanged.connect(self._mark_settings_changed)
+        external_layout.addRow("Password:", self.llm_password_edit)
+        
+        external_desc = QLabel("Click 'Test Connection' to verify the server and load available models.")
+        external_desc.setStyleSheet("color: #666666; font-size: 12px;")
+        external_desc.setWordWrap(True)
+        external_layout.addRow("", external_desc)
+        
+        # Button row for test and warm up
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(10)
+        
+        # Test connection button
+        test_button = QPushButton("Test Connection && Load Models")
         test_button.clicked.connect(self._test_llm_connection)
-        external_layout.addRow("", test_button)
+        button_layout.addWidget(test_button)
         
-        layout.addWidget(external_group)
+        # Warm up button
+        warmup_button = QPushButton("Warm Up Model")
+        warmup_button.setToolTip("Send a test request to load the model into memory (may take 1-2 minutes)")
+        warmup_button.clicked.connect(self._warm_up_model)
+        button_layout.addWidget(warmup_button)
         
-        # Connect signals to enable/disable the appropriate sections
-        self.embedded_radio.toggled.connect(lambda checked: embedded_group.setEnabled(checked))
-        self.embedded_radio.toggled.connect(self._mark_settings_changed)
-        self.external_radio.toggled.connect(lambda checked: external_group.setEnabled(checked))
-        self.external_radio.toggled.connect(self._mark_settings_changed)
+        button_layout.addStretch()
+        external_layout.addRow("", button_layout)
         
-        # Set initial state based on radio button
-        embedded_group.setEnabled(self.embedded_radio.isChecked())
-        external_group.setEnabled(self.external_radio.isChecked())
+        layout.addWidget(self.external_group)
         
-        # ---------- LLM Processing Settings ----------
-        processing_group = QGroupBox("Processing Settings")
-        processing_layout = QFormLayout(processing_group)
-        processing_layout.setContentsMargins(15, 20, 15, 15)
-        processing_layout.setSpacing(10)
+        # ---------- System Prompt ----------
+        prompt_group = QGroupBox("System Prompt")
+        prompt_layout = QVBoxLayout(prompt_group)
+        prompt_layout.setContentsMargins(15, 20, 15, 15)
+        prompt_layout.setSpacing(10)
         
-        self.processing_type_combo = QComboBox()
-        self.processing_type_combo.addItem("Summarize", "summarize")
-        self.processing_type_combo.addItem("Extract Action Items", "action_items")
-        self.processing_type_combo.addItem("Key Points", "key_points")
-        self.processing_type_combo.addItem("Custom Prompt", "custom")
-        self.processing_type_combo.setMinimumWidth(250)
-        self.processing_type_combo.setMinimumHeight(30)
-        # Fix dropdown width when shown
-        self.processing_type_combo.view().setTextElideMode(Qt.ElideNone)
-        self.processing_type_combo.installEventFilter(self)
-        self.processing_type_combo.activated.connect(lambda: self._resize_combo_popup(self.processing_type_combo))
+        prompt_desc = QLabel("Enter your prompt below. Use {text} as a placeholder for the transcribed text.")
+        prompt_desc.setStyleSheet("color: #666666; font-size: 12px;")
+        prompt_desc.setWordWrap(True)
+        prompt_layout.addWidget(prompt_desc)
         
-        # Set current item based on settings
-        if hasattr(self.settings.llm, 'default_processing_type') and self.settings.llm.default_processing_type:
-            for i in range(self.processing_type_combo.count()):
-                if self.processing_type_combo.itemData(i) == self.settings.llm.default_processing_type:
-                    self.processing_type_combo.setCurrentIndex(i)
-                    break
-            else:
-                # Not found, default to first item
-                self.processing_type_combo.setCurrentIndex(0)
+        self.custom_prompt_edit = QTextEdit()
+        self.custom_prompt_edit.setMinimumHeight(100)
+        self.custom_prompt_edit.setPlaceholderText("Fix any grammar, spelling, and punctuation errors in the following text. Keep the meaning exactly the same. Only output the corrected text, nothing else:\n\n{text}")
+        
+        # Set the current custom prompt
+        if hasattr(self.settings.llm, 'custom_prompt') and self.settings.llm.custom_prompt:
+            self.custom_prompt_edit.setText(self.settings.llm.custom_prompt)
         else:
-            # Default to first item if no setting
-            self.processing_type_combo.setCurrentIndex(0)
-                
-        self.processing_type_combo.currentIndexChanged.connect(self._mark_settings_changed)
+            self.custom_prompt_edit.setText("Fix any grammar, spelling, and punctuation errors in the following text. Keep the meaning exactly the same. Only output the corrected text, nothing else:\n\n{text}")
         
-        processing_layout.addRow("Default Processing:", self.processing_type_combo)
+        self.custom_prompt_edit.textChanged.connect(self._mark_settings_changed)
+        prompt_layout.addWidget(self.custom_prompt_edit)
         
-        # Custom prompt text edit
-        custom_prompt_desc = QLabel("You can use {text} as a placeholder for the transcribed text")
-        custom_prompt_desc.setStyleSheet("color: #666666; font-size: 12px;")
-        processing_layout.addRow("", custom_prompt_desc)
+        layout.addWidget(prompt_group)
         
-        # Note about embedded model limitations
-        embedded_note = QLabel("Note: BART/DistilBART models only support summarization, while T5 models better support custom prompts")
-        embedded_note.setStyleSheet("color: #666666; font-size: 12px; font-style: italic;")
-        embedded_note.setWordWrap(True)
-        processing_layout.addRow("", embedded_note)
+        # Connect signals to enable/disable sections based on mode
+        self.embedded_radio.toggled.connect(lambda checked: self.embedded_group.setEnabled(checked))
+        self.embedded_radio.toggled.connect(lambda checked: self.external_group.setEnabled(not checked))
+        self.embedded_radio.toggled.connect(self._mark_settings_changed)
         
-        layout.addWidget(processing_group)
+        # Set initial enabled states
+        self.embedded_group.setEnabled(self.embedded_radio.isChecked())
+        self.external_group.setEnabled(self.external_radio.isChecked())
         
-        # Disable the settings if LLM is not enabled
-        mode_group.setEnabled(self.settings.llm.enabled)
-        embedded_group.setEnabled(self.settings.llm.enabled and self.embedded_radio.isChecked())
-        external_group.setEnabled(self.settings.llm.enabled and self.external_radio.isChecked())
-        processing_group.setEnabled(self.settings.llm.enabled)
+        # Disable all settings if LLM is not enabled
+        self._update_llm_settings_enabled(self.settings.llm.enabled)
         
-        # Add scroll area for smaller screens
+        layout.addStretch()
+        
+        # Wrap in scroll area
         scroll_area = QScrollArea()
         scroll_area.setWidget(widget)
         scroll_area.setWidgetResizable(True)
@@ -638,9 +583,20 @@ class SettingsWindow(QMainWindow):
         
         return scroll_widget
     
+    def _update_llm_settings_enabled(self, enabled: bool):
+        """Enable or disable LLM settings based on the main checkbox"""
+        self.mode_group.setEnabled(enabled)
+        self.embedded_group.setEnabled(enabled and self.embedded_radio.isChecked())
+        self.external_group.setEnabled(enabled and self.external_radio.isChecked())
+        # Find prompt group and enable/disable it
+        for child in self.findChildren(QGroupBox):
+            if child.title() == "System Prompt":
+                child.setEnabled(enabled)
+                break
+    
     def _ensure_llm_settings_initialized(self):
         """Ensure LLM settings are initialized with default values if missing"""
-        if not hasattr(self.settings, 'llm'):
+        if not hasattr(self.settings, 'llm') or self.settings.llm is None:
             from ...domain.settings import LLMSettings
             self.settings.llm = LLMSettings()
             
@@ -649,19 +605,25 @@ class SettingsWindow(QMainWindow):
             self.settings.llm.enabled = False
             
         if not hasattr(self.settings.llm, 'use_embedded_model'):
-            self.settings.llm.use_embedded_model = True
+            self.settings.llm.use_embedded_model = False  # Default to external (Ollama)
             
         if not hasattr(self.settings.llm, 'embedded_model_name'):
-            self.settings.llm.embedded_model_name = "google/flan-t5-small"
+            self.settings.llm.embedded_model_name = "Qwen/Qwen2.5-1.5B-Instruct-GGUF"
             
         if not hasattr(self.settings.llm, 'api_url'):
-            self.settings.llm.api_url = "http://localhost:8080/v1"
+            self.settings.llm.api_url = "http://localhost:11434/v1"
             
         if not hasattr(self.settings.llm, 'model'):
-            self.settings.llm.model = "llama3"
+            self.settings.llm.model = "llama3.2"
             
-        if not hasattr(self.settings.llm, 'default_processing_type'):
-            self.settings.llm.default_processing_type = "summarize"
+        if not hasattr(self.settings.llm, 'custom_prompt'):
+            self.settings.llm.custom_prompt = "Fix any grammar, spelling, and punctuation errors in the following text. Keep the meaning exactly the same. Only output the corrected text, nothing else:\n\n{text}"
+            
+        if not hasattr(self.settings.llm, 'api_username'):
+            self.settings.llm.api_username = ""
+            
+        if not hasattr(self.settings.llm, 'api_password'):
+            self.settings.llm.api_password = ""
     
     def _create_appearance_tab(self) -> QWidget:
         """Create the appearance settings tab"""
@@ -967,45 +929,46 @@ class SettingsWindow(QMainWindow):
         
         # 4. LLM tab
         if hasattr(self, 'llm_enabled_check'):
+            # Ensure LLM settings exist
+            if not self.settings.llm:
+                from ...domain.settings import LLMSettings
+                self.settings.llm = LLMSettings()
+            
             self.settings.llm.enabled = self.llm_enabled_check.isChecked()
             
             # Check whether we're using embedded model or external API
             if hasattr(self, 'embedded_radio'):
                 self.settings.llm.use_embedded_model = self.embedded_radio.isChecked()
                 
-                if self.settings.llm.use_embedded_model and hasattr(self, 'embedded_model_combo'):
-                    # Get the embedded model name
-                    model_name = self.embedded_model_combo.currentText()
-                    
-                    # Ensure model names have proper repository prefix
-                    if model_name == "distilbart-cnn-12-6":
-                        model_name = "facebook/distilbart-cnn-12-6"
-                    
-                    self.settings.llm.embedded_model_name = model_name
-                    
-                    # If the model has been changed, we should show the download progress
-                    old_model = getattr(self.settings.llm, 'embedded_model_name', "")
-                    if old_model != model_name and hasattr(self, 'download_group'):
-                        self.download_group.setVisible(True)
-                        self.download_status_label.setText(f"Model will be downloaded when processing starts: {model_name}")
-                        QApplication.processEvents()  # Ensure UI updates
-                elif hasattr(self, 'server_url_input'):
-                    # External API settings
-                    # Get text directly from editable combo boxes
-                    if hasattr(self, 'llm_api_url_edit'):
-                        self.settings.llm.api_url = self.llm_api_url_edit.currentText().strip()
-                    if hasattr(self, 'llm_model_edit'):
-                        self.settings.llm.model = self.llm_model_edit.currentText().strip()
-                    
-                    # Ensure we have default values if empty
+                # Save embedded model name
+                if hasattr(self, 'embedded_model_combo'):
+                    self.settings.llm.embedded_model_name = self.embedded_model_combo.currentText()
+                
+                # Save external API settings
+                if hasattr(self, 'llm_api_url_edit'):
+                    self.settings.llm.api_url = self.llm_api_url_edit.text().strip()
                     if not self.settings.llm.api_url:
-                        self.settings.llm.api_url = "http://localhost:8080/v1"
+                        self.settings.llm.api_url = "http://localhost:11434/v1"
+                
+                if hasattr(self, 'llm_model_combo'):
+                    self.settings.llm.model = self.llm_model_combo.currentText().strip()
                     if not self.settings.llm.model:
-                        self.settings.llm.model = "llama3"
+                        self.settings.llm.model = "llama3.2"
+                
+                # Save authentication credentials
+                if hasattr(self, 'llm_username_edit'):
+                    self.settings.llm.api_username = self.llm_username_edit.text().strip()
+                if hasattr(self, 'llm_password_edit'):
+                    self.settings.llm.api_password = self.llm_password_edit.text()
             
-            # Processing type (common for both modes)
-            if hasattr(self, 'processing_type_combo'):
-                self.settings.llm.default_processing_type = self.processing_type_combo.currentData()
+            # Save custom prompt
+            if hasattr(self, 'custom_prompt_edit'):
+                prompt = self.custom_prompt_edit.toPlainText().strip()
+                if prompt:
+                    self.settings.llm.custom_prompt = prompt
+                else:
+                    # Use default if prompt is empty
+                    self.settings.llm.custom_prompt = "Fix any grammar, spelling, and punctuation errors in the following text. Keep the meaning exactly the same. Only output the corrected text, nothing else:\n\n{text}"
         
         # 5. Appearance tab
         if not hasattr(self.settings, 'appearance'):
@@ -1055,21 +1018,7 @@ class SettingsWindow(QMainWindow):
 
     def _on_llm_enabled_toggled(self, enabled):
         """Handle LLM enabled checkbox toggle"""
-        # Find the LLM tab widgets
-        for i in range(self.layout().count()):
-            widget = self.layout().itemAt(i).widget()
-            if isinstance(widget, QTabWidget):
-                tab_widget = widget
-                # Find the LLM tab
-                for j in range(tab_widget.count()):
-                    if tab_widget.tabText(j) == "LLM Processing":
-                        llm_tab = tab_widget.widget(j)
-                        # Enable/disable all group boxes except the first one
-                        for k in range(llm_tab.layout().count()):
-                            item = llm_tab.layout().itemAt(k)
-                            if item and item.widget() and isinstance(item.widget(), QGroupBox):
-                                if k > 0:  # Skip the first group box (enable/disable)
-                                    item.widget().setEnabled(enabled)
+        self._update_llm_settings_enabled(enabled)
     
     def _test_llm_connection(self):
         """Test the LLM server connection"""
@@ -1080,28 +1029,83 @@ class SettingsWindow(QMainWindow):
         self.setCursor(cursor)
         
         try:
-            processor = TextProcessor(api_url=self.llm_api_url_edit.currentText())
-            if processor.available:
-                models = processor.get_available_models()
-                if models:
-                    QMessageBox.information(
+            # Get credentials if provided
+            username = self.llm_username_edit.text().strip() if hasattr(self, 'llm_username_edit') else ""
+            password = self.llm_password_edit.text() if hasattr(self, 'llm_password_edit') else ""
+            
+            api_url = self.llm_api_url_edit.text().strip()
+            
+            # Test basic connectivity
+            import requests
+            from requests.auth import HTTPBasicAuth
+            
+            auth = HTTPBasicAuth(username, password) if username and password else None
+            
+            # Get base URL (strip /v1 if present)
+            base_url = api_url.rstrip('/')
+            if base_url.endswith('/v1'):
+                base_url = base_url[:-3]
+            
+            try:
+                # First check basic connectivity
+                response = requests.get(base_url, timeout=5, auth=auth, allow_redirects=True)
+                status_code = response.status_code
+                
+                if status_code in [401, 403]:
+                    QMessageBox.warning(
                         self,
-                        "Connection Successful",
-                        f"Successfully connected to LLM server.\nAvailable models: {', '.join(models[:5])}",
+                        "Authentication Required",
+                        f"Server responded with status {status_code}.\n\nThe server is reachable but requires authentication.\nPlease check your username and password.",
                         QMessageBox.Ok
                     )
-                else:
-                    QMessageBox.information(
-                        self,
-                        "Connection Successful",
-                        "Successfully connected to LLM server, but no models found.",
-                        QMessageBox.Ok
-                    )
-            else:
-                QMessageBox.warning(
+                    return
+                
+                # Try to get available models and populate dropdown
+                models = []
+                models_list = ""
+                try:
+                    models_response = requests.get(f"{api_url}/models", timeout=5, auth=auth)
+                    if models_response.status_code == 200:
+                        data = models_response.json()
+                        models = [m.get("id", "unknown") for m in data.get("data", []) if m.get("id")]
+                        if models:
+                            models_list = "\n\nAvailable models:\n• " + "\n• ".join(models[:10])
+                            if len(models) > 10:
+                                models_list += f"\n... and {len(models) - 10} more"
+                except:
+                    pass  # Models endpoint might not exist, that's okay
+                
+                # Populate the model dropdown
+                if models and hasattr(self, 'llm_model_combo'):
+                    current_model = self.llm_model_combo.currentText()
+                    self.llm_model_combo.clear()
+                    self.llm_model_combo.addItems(models)
+                    # Restore previous selection if it exists in the list
+                    if current_model in models:
+                        self.llm_model_combo.setCurrentText(current_model)
+                    elif models:
+                        self.llm_model_combo.setCurrentIndex(0)
+                    models_list += "\n\n✓ Model dropdown has been populated!"
+                
+                QMessageBox.information(
+                    self,
+                    "Connection Successful",
+                    f"Successfully connected to LLM server!\n\nURL: {api_url}\nStatus: {status_code}{models_list}",
+                    QMessageBox.Ok
+                )
+                    
+            except requests.exceptions.ConnectionError:
+                QMessageBox.critical(
                     self,
                     "Connection Failed",
-                    "Could not connect to LLM server. Please check the API URL and ensure the server is running.",
+                    f"Could not connect to {base_url}\n\nPlease check:\n- The URL is correct\n- The server is running\n- Any firewalls or proxies",
+                    QMessageBox.Ok
+                )
+            except requests.exceptions.Timeout:
+                QMessageBox.warning(
+                    self,
+                    "Connection Timeout",
+                    f"Connection to {base_url} timed out after 5 seconds.\n\nThe server may be slow or unreachable.",
                     QMessageBox.Ok
                 )
         except Exception as e:
@@ -1114,6 +1118,123 @@ class SettingsWindow(QMainWindow):
         finally:
             cursor.setShape(Qt.ArrowCursor)
             self.setCursor(cursor)
+
+    def _warm_up_model(self):
+        """Send a test request to warm up the model (load it into VRAM)"""
+        import requests
+        from requests.auth import HTTPBasicAuth
+        from PySide6.QtWidgets import QProgressDialog
+        from PySide6.QtCore import QTimer
+        import threading
+        
+        model = self.llm_model_combo.currentText().strip() if hasattr(self, 'llm_model_combo') else ""
+        if not model:
+            QMessageBox.warning(
+                self,
+                "No Model Selected",
+                "Please select a model first.\n\nUse 'Test Connection & Load Models' to populate the model list.",
+                QMessageBox.Ok
+            )
+            return
+        
+        api_url = self.llm_api_url_edit.text().strip()
+        if not api_url:
+            QMessageBox.warning(
+                self,
+                "No API URL",
+                "Please enter the API URL first.",
+                QMessageBox.Ok
+            )
+            return
+        
+        # Get credentials
+        username = self.llm_username_edit.text().strip() if hasattr(self, 'llm_username_edit') else ""
+        password = self.llm_password_edit.text() if hasattr(self, 'llm_password_edit') else ""
+        auth = HTTPBasicAuth(username, password) if username and password else None
+        
+        # Create progress dialog
+        progress = QProgressDialog(
+            f"Warming up model '{model}'...\n\nThis may take 1-2 minutes on first load.",
+            "Cancel",
+            0, 0,
+            self
+        )
+        progress.setWindowTitle("Warming Up Model")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        progress.show()
+        
+        # Result storage
+        self._warmup_result = None
+        self._warmup_cancelled = False
+        
+        def do_warmup():
+            """Run the warmup request in background thread"""
+            try:
+                response = requests.post(
+                    f"{api_url}/chat/completions",
+                    json={
+                        "model": model,
+                        "messages": [{"role": "user", "content": "Hello"}],
+                        "max_tokens": 5
+                    },
+                    timeout=120,
+                    auth=auth
+                )
+                
+                if response.status_code == 200:
+                    self._warmup_result = (True, "Model warmed up successfully!")
+                else:
+                    error_msg = response.text[:200] if response.text else f"Status {response.status_code}"
+                    self._warmup_result = (False, f"Error: {error_msg}")
+            except requests.exceptions.Timeout:
+                self._warmup_result = (False, "Request timed out after 2 minutes.\nThe model may be very large or the server is slow.")
+            except requests.exceptions.ConnectionError:
+                self._warmup_result = (False, "Could not connect to the server.")
+            except Exception as e:
+                self._warmup_result = (False, str(e))
+        
+        def check_result():
+            """Check if warmup is done (called by timer)"""
+            if self._warmup_cancelled:
+                progress.close()
+                return
+            
+            if self._warmup_result is not None:
+                progress.close()
+                success, message = self._warmup_result
+                
+                if success:
+                    QMessageBox.information(
+                        self,
+                        "Model Ready",
+                        f"Model '{model}' is now warmed up and ready to use!",
+                        QMessageBox.Ok
+                    )
+                else:
+                    QMessageBox.warning(
+                        self,
+                        "Warm Up Failed",
+                        f"Failed to warm up model '{model}':\n\n{message}",
+                        QMessageBox.Ok
+                    )
+            else:
+                # Still running, check again in 500ms
+                QTimer.singleShot(500, check_result)
+        
+        def on_cancelled():
+            self._warmup_cancelled = True
+            progress.close()
+        
+        progress.canceled.connect(on_cancelled)
+        
+        # Start background thread
+        thread = threading.Thread(target=do_warmup, daemon=True)
+        thread.start()
+        
+        # Start checking for result
+        QTimer.singleShot(500, check_result)
 
     def closeEvent(self, event):
         """Handle the window close event"""

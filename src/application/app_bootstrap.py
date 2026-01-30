@@ -37,6 +37,10 @@ class AppBootstrap:
     
     def __init__(self):
         """Initialize the application bootstrap."""
+        self.service_manager = None
+        self.settings_window = None
+        self.download_manager_window = None
+        
         # Set up Linux-specific configuration before creating QApplication
         if platform.system() == 'Linux':
             try:
@@ -136,14 +140,22 @@ class AppBootstrap:
             
         except Exception as e:
             logger.critical(f"Failed to initialize application: {e}", exc_info=True)
-            self._show_error(f"Failed to initialize application: {str(e)}\n\nPlease check your internet connection and try again.")
-            sys.exit(1)
+            self._show_error(f"Application started with errors: {str(e)}\n\nSome features may not work. Please check logs.")
+            # Do not exit, try to keep running in a degraded state
+            # sys.exit(1)
     
     def _connect_signals(self):
         """Connect signals between components."""
         logger.debug("Connecting signals between components")
         
+        if not self.service_manager:
+            logger.error("Service manager is None, cannot connect signals")
+            return
+            
         recording_service = self.service_manager.recording_service
+        if not recording_service:
+            logger.error("Recording service is None, cannot connect signals")
+            return
         
         # Recording state signals
         recording_service.recording_started.connect(self.tray.on_recording_started)
@@ -182,6 +194,10 @@ class AppBootstrap:
         """Show the settings dialog."""
         logger.debug("Showing settings dialog")
         
+        if not self.service_manager:
+            self._show_error("Cannot open settings: Service manager is not initialized.")
+            return
+            
         # Disable hotkeys while settings dialog is open
         if hasattr(self.service_manager.recording_service, 'hotkey_handler') and \
            hasattr(self.service_manager.recording_service.hotkey_handler, 'set_hotkeys_enabled'):

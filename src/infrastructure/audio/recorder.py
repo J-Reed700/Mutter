@@ -152,6 +152,28 @@ class AudioRecorder:
         except Exception as e:
             logger.error(f"Error validating device settings: {e}")
     
+    def is_healthy(self) -> bool:
+        """Check if the audio recorder is healthy and the device is available.
+        
+        Returns:
+            bool: True if healthy, False otherwise
+        """
+        try:
+            # If using default device (None), it's always "healthy" unless system has no audio
+            if self.device is None or self.device == 'default':
+                try:
+                    sd.query_devices(kind='input')
+                    return True
+                except Exception:
+                    return False
+            
+            # Check if specific device still exists
+            device_id = self._resolve_device_id(self.device)
+            return device_id is not None
+        except Exception as e:
+            logger.error(f"Error checking recorder health: {e}")
+            return False
+
     def update_settings(self, sample_rate=None, channels=None, device=None):
         """Update recorder settings.
         

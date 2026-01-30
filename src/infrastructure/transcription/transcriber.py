@@ -211,6 +211,14 @@ class Transcriber:
             self.last_processing_time_ms = 0
             return None 
 
+    def is_healthy(self) -> bool:
+        """Check if the transcriber is healthy.
+        
+        Returns:
+            bool: True if healthy (model loaded), False otherwise
+        """
+        return self.model is not None
+
     def get_last_processing_time(self):
         """Get the processing time of the last transcription in milliseconds.
         

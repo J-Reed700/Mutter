@@ -158,7 +158,6 @@ class WaylandHotkeyHandler(HotkeyHandler):
                 # Check if this is the process text hotkey
                 if (self.registered_process_text_hotkey and 
                     self._check_hotkey_match(self.registered_process_text_hotkey)):
-                    logger.debug("Process text hotkey pressed")
                     self.process_text_hotkey_pressed.emit()
                     return
                     
@@ -173,7 +172,6 @@ class WaylandHotkeyHandler(HotkeyHandler):
                     if self._check_hotkey_match(hotkey):
                         if not self._is_key_held:
                             self._is_key_held = True
-                            logger.debug(f"Hotkey pressed: {self._current_keys}")
                             self.hotkey_pressed.emit()
                         return
                         

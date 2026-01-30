@@ -62,7 +62,6 @@ class LinuxHotkeyHandler(HotkeyHandler):
                 # Check if this is the process text hotkey
                 if (self.registered_process_text_hotkey and 
                     self._check_hotkey_match(self.registered_process_text_hotkey)):
-                    logger.debug("Process text hotkey pressed")
                     self.process_text_hotkey_pressed.emit()
                     return
                     

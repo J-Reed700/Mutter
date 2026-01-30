@@ -23,21 +23,38 @@ class TranscriptionSettings:
 @dataclass
 class LLMSettings:
     """Settings for LLM text processing"""
-    api_url: str = "http://localhost:8080/v1"
-    model: str = "llama3"
+    api_url: str = "http://localhost:11434/v1"  # Default to Ollama
+    model: str = "llama3.2"
     enabled: bool = False
-    default_processing_type: str = "summarize"  # "summarize" or "custom"
-    custom_prompt_templates: Dict[str, str] = None
+    custom_prompt: str = """You are an intelligent text processing assistant. The user has dictated text using voice transcription.
+
+Your task:
+1. If the text contains instructions like "make this more descriptive", "enhance this", "add adjectives", "rewrite this professionally", etc., apply those instructions to the REST of the text (the part BEFORE the instruction).
+2. If there are no instructions, simply fix grammar, spelling, and punctuation errors.
+3. Remove any meta-instructions from the final output (phrases like "can you...", "make this...", etc.).
+4. Output ONLY the final processed text - no explanations, no preambles.
+
+Examples:
+- Input: "I need error handling. Make this more professional."
+  Output: "We require comprehensive error handling mechanisms."
+
+- Input: "The project is delayed. Add more descriptive words."
+  Output: "The critical project timeline has experienced significant delays."
+
+- Input: "I went to the store yesterday"
+  Output: "I went to the store yesterday."
+
+Text to process:
+
+{text}"""
     use_embedded_model: bool = False  # Whether to use the embedded model instead of API
-    embedded_model_name: str = "sshleifer/distilbart-cnn-12-6"  # Default embedded model
-    
-    def __post_init__(self):
-        if self.custom_prompt_templates is None:
-            self.custom_prompt_templates = {
-                "summarize": "Please summarize the following text concisely: {text}",
-                "action_items": "Extract key action items from the following text: {text}",
-                "key_points": "What are the key points from this text: {text}"
-            }
+    embedded_model_name: str = "Qwen/Qwen2.5-1.5B-Instruct-GGUF"  # Default embedded model
+    # Authentication for external LLM endpoint (Basic Auth)
+    api_username: str = ""  # Username for HTTP Basic Auth
+    api_password: str = ""  # Password for HTTP Basic Auth
+    # Legacy fields kept for compatibility
+    default_processing_type: str = "custom"
+    custom_prompt_templates: Dict[str, str] = None
 
 @dataclass
 class AppearanceSettings:

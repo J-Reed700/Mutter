@@ -68,7 +68,7 @@ class RecordingService(QObject):
         # Initialize LLM processor if enabled
         self.text_processor = None
         self.embedded_processor = None
-        if self.settings.llm.enabled:
+        if self.settings.llm and self.settings.llm.enabled:
             self._initialize_llm_processor()
         
         # State flags
@@ -78,6 +78,24 @@ class RecordingService(QObject):
         # Log current audio settings
         self._log_audio_settings()
     
+    def set_audio_recorder(self, audio_recorder):
+        """Update the audio recorder instance.
+        
+        Args:
+            audio_recorder: New AudioRecorder instance
+        """
+        logger.info("Hot-swapping AudioRecorder")
+        self.audio_recorder = audio_recorder
+        
+    def set_transcriber(self, transcriber):
+        """Update the transcriber instance.
+        
+        Args:
+            transcriber: New Transcriber instance
+        """
+        logger.info("Hot-swapping Transcriber")
+        self.transcriber = transcriber
+
     def _log_audio_settings(self):
         """Log current audio settings for debugging"""
         logger.debug(f"Current audio settings: device={self.settings.audio.input_device}, "
@@ -87,14 +105,38 @@ class RecordingService(QObject):
             logger.debug(f"AudioRecorder: device={self.audio_recorder.device}, "
                          f"sample_rate={self.audio_recorder.sample_rate}, "
                          f"channels={self.audio_recorder.channels}")
+        else:
+            logger.warning("AudioRecorder is not initialized")
     
     def _initialize_llm_processor(self):
-        """Initialize the LLM processor"""
-        # Skip LLM initialization completely
-        logger.info("LLM features have been disabled - skipping initialization")
-        self.text_processor = None
-        self.embedded_processor = None
-        return
+        """Initialize the LLM processor based on settings"""
+        if not self.settings.llm or not self.settings.llm.enabled:
+            logger.info("LLM processing is disabled in settings")
+            self.text_processor = None
+            self.embedded_processor = None
+            return
+            
+        if self.settings.llm.use_embedded_model:
+            # Embedded model support is not yet implemented
+            logger.info("Embedded LLM is not yet implemented - skipping")
+            self.embedded_processor = None
+            self.text_processor = None
+        else:
+            # Initialize external API processor (Ollama, etc.)
+            try:
+                api_url = self.settings.llm.api_url or "http://localhost:11434/v1"
+                username = getattr(self.settings.llm, 'api_username', '') or ''
+                password = getattr(self.settings.llm, 'api_password', '') or ''
+                
+                logger.info(f"Initializing external LLM processor at {api_url}" + (" (with auth)" if username else ""))
+                self.text_processor = TextProcessor(api_url=api_url, username=username, password=password)
+                if self.text_processor.available:
+                    logger.info("External LLM processor initialized successfully")
+                else:
+                    logger.warning(f"External LLM API not available at {api_url}")
+            except Exception as e:
+                logger.error(f"Failed to initialize external LLM processor: {e}")
+                self.text_processor = None
     
     def _register_hotkeys(self):
         """Register the hotkeys from settings"""
@@ -270,10 +312,8 @@ class RecordingService(QObject):
     def _on_hotkey_pressed(self):
         """Handle hotkey press event"""
         if not self.is_recording:
-            logger.debug("Hotkey pressed, starting recording")
             self.start_recording()
         else:
-            logger.debug("Hotkey pressed while recording, stopping recording")
             self.stop_recording()
     
     def _on_hotkey_released(self):
@@ -314,6 +354,11 @@ class RecordingService(QObject):
             return None
             
         logger.info("Stopping recording")
+        
+        if not self.audio_recorder:
+            logger.warning("No audio recorder available to stop")
+            self.is_recording = False
+            return None
         
         try:
             recording_path = self.audio_recorder.stop_recording()
@@ -431,9 +476,22 @@ class RecordingService(QObject):
                 )
                 logger.debug(f"Created domain event: {transcription_completed_event}")
                 
-                # Emit UI signal
-                logger.info(f"Transcription complete: {transcribed_text[:50]}...")
-                self.transcription_complete.emit(transcribed_text)
+                # Process with LLM if enabled
+                final_text = transcribed_text
+                llm_exists = self.settings.llm is not None
+                llm_enabled = self.settings.llm.enabled if llm_exists else False
+                logger.debug(f"LLM check: llm_exists={llm_exists}, llm_enabled={llm_enabled}")
+                if self.settings.llm and self.settings.llm.enabled:
+                    logger.info("LLM processing is enabled - processing transcription")
+                    llm_result = self._process_text_with_llm_sync(transcribed_text, transcription_id)
+                    if llm_result and llm_result.processed_text:
+                        final_text = llm_result.processed_text
+                        logger.info(f"LLM processed text: {final_text[:50]}...")
+                        self.llm_processing_complete.emit(llm_result)
+                
+                # Emit UI signal with final text (LLM processed or original)
+                logger.info(f"Transcription complete: {final_text[:50]}...")
+                self.transcription_complete.emit(final_text)
                 
                 # Delete the recording file after successful transcription
                 self._delete_recording_file(recording_path)
@@ -470,30 +528,75 @@ class RecordingService(QObject):
     
     def _on_process_text_hotkey(self):
         """Handle process text hotkey press event"""
-        logger.debug("Process text hotkey pressed")
         if not self.last_transcription:
             logger.warning("No transcription available to process")
             return
             
         self._process_text_with_llm(self.last_transcription)
     
+    def _process_text_with_llm_sync(self, text, transcription_id=None) -> Optional[LLMProcessingResult]:
+        """Process text using the LLM synchronously
+        
+        Args:
+            text: Text to process
+            transcription_id: ID of the transcription entity if available
+            
+        Returns:
+            LLMProcessingResult or None if processing failed
+        """
+        if not self.settings.llm or not self.settings.llm.enabled:
+            logger.info("LLM processing is disabled - skipping")
+            return None
+            
+        if not self.text_processor or not self.text_processor.available:
+            logger.warning("LLM processor not available - trying to initialize")
+            self._initialize_llm_processor()
+            if not self.text_processor or not self.text_processor.available:
+                logger.error("Failed to initialize LLM processor")
+                return None
+        
+        try:
+            # Get the custom prompt from settings
+            prompt_template = self.settings.llm.custom_prompt or "Fix any grammar, spelling, and punctuation errors in the following text. Keep the meaning exactly the same. Only output the corrected text, nothing else:\n\n{text}"
+            model = self.settings.llm.model or "llama3.2"
+            
+            logger.info(f"Processing text with LLM (model: {model})")
+            logger.debug(f"Prompt template: {prompt_template[:100]}...")
+            
+            result = self.text_processor.process_with_prompt(text, prompt_template, model)
+            
+            if result and result.processed_text:
+                logger.info("LLM processing completed successfully")
+                return result
+            else:
+                logger.warning("LLM processing returned empty result")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error processing text with LLM: {e}")
+            return None
+    
     def _process_text_with_llm(self, text, transcription_id=None):
-        """Process text using the LLM
+        """Process text using the LLM (async version that emits signals)
         
         Args:
             text: Text to process
             transcription_id: ID of the transcription entity if available
         """
-        # LLM processing is disabled
-        logger.info("LLM processing is disabled - skipping text processing")
-        # Create a no-op result to avoid null errors
-        result = LLMProcessingResult(
-            original_text=text, 
-            processed_text="", 
-            processing_type="none", 
-            model_name="disabled"
-        )
-        self.llm_processing_complete.emit(result)
+        result = self._process_text_with_llm_sync(text, transcription_id)
+        
+        if result:
+            self.llm_processing_complete.emit(result)
+        else:
+            # Emit result with original text if processing failed
+            model = self.settings.llm.model if self.settings.llm else "unknown"
+            fallback_result = LLMProcessingResult(
+                original_text=text,
+                processed_text=text,
+                processing_type="error",
+                model_name=model
+            )
+            self.llm_processing_complete.emit(fallback_result)
     
     def shutdown(self):
         """Clean up resources before shutdown"""
@@ -575,8 +678,12 @@ class RecordingService(QObject):
         self.settings = settings
         
         # Update components that depend on settings
-        if self.settings.llm.enabled:
+        if self.settings.llm and self.settings.llm.enabled:
             self._initialize_llm_processor()
+        else:
+            # Disable LLM processors if LLM is disabled
+            self.text_processor = None
+            self.embedded_processor = None
         
         # Update audio recorder settings if they changed
         if (self.audio_recorder.sample_rate != self.settings.audio.sample_rate or

@@ -401,31 +401,44 @@ class SystemTrayIcon(QSystemTrayIcon):
         Updates the menu with the transcription and shows a notification.
         """
         logger.debug(f"Transcription complete, text length: {len(text)}")
-        
+        logger.debug(f"Received text: {text[:100]}...")
+
         # Store the transcription and update menu items
         self.last_transcription = text
+        logger.debug(f"Set last_transcription to: {self.last_transcription[:100]}...")
+        logger.debug(f"Current last_llm_result: {self.last_llm_result[:100] if self.last_llm_result else 'None'}...")
         self.update_last_transcription_menu_item()
-        
+
         # Set processing state
         self.is_processing = False
-        
+
         # Stop animation timer
         self.animation_timer.stop()
-        
+
         # Reset to default icon
         self.setIcon(self._default_icon)
-        
+
         # Update status
         self.status_action.setText("Ready")
         self.setToolTip("Mutter\nReady")
-        
-        # Copy to clipboard automatically without showing notification
-        self.copy_to_clipboard()
-        
-        # Auto-paste into current active window if enabled
-        if self.auto_paste:
-            self._auto_paste_to_active_window()
-        
+
+        # Only copy and auto-paste if LLM did NOT process this text
+        # (If LLM processed it, on_llm_processing_complete already handled copy/paste)
+        llm_processed_this = (self.last_llm_result and
+                             self.last_llm_result == text)
+
+        if not llm_processed_this:
+            # LLM was not enabled or did not process - copy and paste the raw transcription
+            logger.debug("LLM did not process this text - copying and pasting transcription")
+            self.copy_to_clipboard()
+
+            # Auto-paste into current active window if enabled
+            if self.auto_paste:
+                logger.debug("Auto-pasting raw transcription")
+                self._auto_paste_to_active_window()
+        else:
+            logger.debug("LLM already processed and pasted this text - skipping duplicate paste")
+
         # Schedule the toast notification with a slight delay to avoid overlap
         logger.debug("Scheduling transcription complete toast with 1.5s delay")
         QTimer.singleShot(1500, self._show_transcription_complete_toast)
@@ -494,28 +507,39 @@ class SystemTrayIcon(QSystemTrayIcon):
     @Slot(object)
     def on_llm_processing_complete(self, result):
         """Handle LLM processing complete
-        
+
         Args:
             result: LLMProcessingResult object
         """
         # Store the LLM result
         self.last_llm_result = result.processed_text
-        
-        # Update menu items
-        preview = result.processed_text[:50] + "..." if len(result.processed_text) > 50 else result.processed_text
-        self.recent_llm_action.setText(preview)
-        self.recent_llm_action.setEnabled(True)
-        self.copy_llm_action.setEnabled(True)
-        
-        # Copy to clipboard
-        self.copy_llm_to_clipboard()
-        
+        logger.debug(f"LLM processing complete, stored result: {self.last_llm_result[:50]}...")
+
+        # Update menu items if they exist
+        if hasattr(self, 'recent_llm_action') and self.recent_llm_action:
+            preview = result.processed_text[:50] + "..." if len(result.processed_text) > 50 else result.processed_text
+            self.recent_llm_action.setText(preview)
+            self.recent_llm_action.setEnabled(True)
+        if hasattr(self, 'copy_llm_action') and self.copy_llm_action:
+            self.copy_llm_action.setEnabled(True)
+
+        # When LLM is enabled, auto-paste happens HERE after LLM completes
+        # Copy to clipboard and auto-paste the LLM result
+        clipboard = QApplication.clipboard()
+        clipboard.setText(self.last_llm_result)
+        logger.debug(f"Copied LLM result to clipboard: {self.last_llm_result[:100]}...")
+
+        # Auto-paste into current active window if enabled
+        if self.auto_paste:
+            logger.debug("Auto-pasting LLM result")
+            self._auto_paste_to_active_window()
+
         # Show toast with preview of processed text and success icon - extended duration
         if self.show_notifications:
             toast_preview = result.processed_text[:35] + "..." if len(result.processed_text) > 35 else result.processed_text
             process_type = result.processing_type.replace("_", " ").title()  # Format the processing type for display
             self.toast.show_toast(f"{process_type} Complete", toast_preview, 4000, "success")
-        
+
         # Flash icon to indicate completion
         self._flash_success_icon()
 
@@ -523,11 +547,11 @@ class SystemTrayIcon(QSystemTrayIcon):
         """Copy the last transcription to clipboard"""
         if not self.last_transcription:
             return
-            
+
         clipboard = QApplication.clipboard()
         clipboard.setText(self.last_transcription)
-        logger.debug("Copied transcription to clipboard")
-        
+        logger.debug(f"Copied transcription to clipboard: {self.last_transcription[:100]}...")
+
         # For Linux, also set the selection clipboard
         if platform.system() == 'Linux':
             clipboard.setText(self.last_transcription, QClipboard.Selection)
@@ -957,16 +981,21 @@ class SystemTrayIcon(QSystemTrayIcon):
     def _auto_paste_to_active_window(self):
         """Automatically paste the clipboard content into the currently active window"""
         try:
-            logger.debug("Attempting to auto-paste to active window")            
+            logger.debug("Attempting to auto-paste to active window")
+
+            # Use LLM result if available, otherwise use raw transcription
+            text_to_paste = self.last_llm_result if self.last_llm_result else self.last_transcription
+            logger.debug(f"Pasting {'LLM processed' if self.last_llm_result else 'raw'} text: {text_to_paste[:100]}...")
+
             # Import platform-specific modules
             import platform
             if platform.system() == 'Windows':
-                windows.WindowsSystemExtension.paste_text(self.last_transcription)     
+                windows.WindowsSystemExtension.paste_text(text_to_paste)
             elif platform.system() == 'Darwin':  # macOS
-                macos.MacOSSystemExtension.paste_text(self.last_transcription)
+                macos.MacOSSystemExtension.paste_text(text_to_paste)
             elif platform.system() == 'Linux':
-                linux.LinuxSystemExtension.paste_text(self.last_transcription)
-                
+                linux.LinuxSystemExtension.paste_text(text_to_paste)
+
         except Exception as e:
             logger.error(f"Error in auto-paste: {e}", exc_info=True)
 

@@ -189,12 +189,7 @@ class MacOSHotkeyHandler(HotkeyHandler):
             
         normalized = self._normalize_key(key)
         if normalized:
-            logger.debug(f"Key pressed: {normalized}")
-            self._pressed_keys.add(normalized)
-            
-            # Log current pressed keys for debugging
-            logger.debug(f"Current pressed keys: {self._pressed_keys}")
-            
+            self._pressed_keys.add(normalized)            
             # Special debug for common macOS confusion keys
             if normalized in ['command', 'control']:
                 logger.debug(f"Detected modifier key: {normalized}")
@@ -239,7 +234,6 @@ class MacOSHotkeyHandler(HotkeyHandler):
     def _on_release(self, key):
         normalized = self._normalize_key(key)
         if normalized in self._pressed_keys:
-            logger.debug(f"Key released: {normalized}")
             self._pressed_keys.remove(normalized)
             
         # For any hotkey that is no longer fully pressed, update its active state

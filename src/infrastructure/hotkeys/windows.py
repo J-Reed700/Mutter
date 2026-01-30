@@ -79,7 +79,6 @@ class WindowsHotkeyHandler(HotkeyHandler):
                 
                 # Check if this is the process text hotkey
                 if self.process_text_hotkey_id is not None and hotkey_id == self.process_text_hotkey_id:
-                    logger.debug("Process text hotkey pressed")
                     self.process_text_hotkey_pressed.emit()
                     return True
                 

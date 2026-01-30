@@ -205,6 +205,10 @@ class AppBootstrap:
         
        # Create a new window if it doesn't exist or was closed
         if self.settings_window is None or not self.settings_window.isVisible():
+            # MEMORY LEAK FIX: Disconnect old signals before creating new window
+            if self.settings_window is not None:
+                self._disconnect_settings_window_signals()
+            
             self.settings_window = SettingsWindow(
                 settings=self.service_manager.settings,
                 settings_repository=self.service_manager.recording_service.settings_repository
@@ -217,6 +221,21 @@ class AppBootstrap:
         self.settings_window.show()
         self.settings_window.raise_()
         self.settings_window.activateWindow()
+    
+    def _disconnect_settings_window_signals(self):
+        """Safely disconnect all signals from the settings window to prevent memory leaks."""
+        if self.settings_window is None:
+            return
+        
+        try:
+            try:
+                self.settings_window.settings_saved.disconnect(self._on_settings_saved)
+                logger.debug("Disconnected settings_saved signal from AppBootstrap")
+            except (TypeError, RuntimeError):
+                # Signal was not connected or already disconnected
+                pass
+        except Exception as e:
+            logger.warning(f"Error disconnecting settings window signals: {e}")
     
     def show_downloads(self):
         """Show the downloads window."""
@@ -312,6 +331,15 @@ class AppBootstrap:
     def shutdown(self):
         """Clean up resources before shutdown."""
         logger.info("Shutting down application")
+        
+        # Clean up tray icon and its toast
+        if hasattr(self, 'tray') and self.tray:
+            if hasattr(self.tray, 'toast') and self.tray.toast:
+                self.tray.toast.cleanup()
+        
+        # Disconnect settings window signals
+        if hasattr(self, 'settings_window') and self.settings_window:
+            self._disconnect_settings_window_signals()
         
         # Shutdown service manager
         if hasattr(self, 'service_manager'):

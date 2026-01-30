@@ -64,6 +64,10 @@ class RecordingService(QObject):
             self.hotkey_handler.hotkey_pressed.connect(self._on_hotkey_pressed)
             self.hotkey_handler.hotkey_released.connect(self._on_hotkey_released)
             self.hotkey_handler.process_text_hotkey_pressed.connect(self._on_process_text_hotkey)
+            
+            # Connect recording state reset signal (emitted when stale keys are cleaned up)
+            if hasattr(self.hotkey_handler, 'recording_state_reset'):
+                self.hotkey_handler.recording_state_reset.connect(self._on_hotkey_state_reset)
         
         # Initialize LLM processor if enabled
         self.text_processor = None
@@ -330,6 +334,21 @@ class RecordingService(QObject):
             self.stop_recording()
         else:
             pass
+    
+    def _on_hotkey_state_reset(self):
+        """Handle hotkey state reset signal from stale key cleanup.
+        
+        This is called when the hotkey handler detects that keys have been 'held' 
+        for too long (e.g., due to sleep/wake or USB disconnect) and resets its state.
+        We need to sync our recording state accordingly.
+        """
+        logger.warning("Hotkey handler state was reset due to stale key cleanup")
+        
+        # If we think we're recording but the hotkey handler reset its state,
+        # we should stop the recording to maintain consistency
+        if self.is_recording:
+            logger.warning("Recording was in progress during hotkey state reset - stopping recording")
+            self.stop_recording()
     
     def _delete_recording_file(self, file_path: Path):
         """Delete the recording file after it's been transcribed.
@@ -599,10 +618,19 @@ class RecordingService(QObject):
             self.llm_processing_complete.emit(fallback_result)
     
     def shutdown(self):
-        """Clean up resources before shutdown"""
+        """Clean up resources before shutdown.
+        
+        Note: The service_manager handles stopping any active recording before
+        calling this method, so we only need to clean up resources here.
+        """
         logger.debug("Shutting down recording service")
-        # Unregister all hotkeys
-        if hasattr(self.hotkey_handler, 'shutdown'):
+        
+        # Clear audio recorder buffer to free memory (recording should already be stopped)
+        if self.audio_recorder:
+            self.audio_recorder._clear_audio_buffer()
+        
+        # Shutdown hotkey handler (stops listener, cleanup timer, sleep/wake observer)
+        if self.hotkey_handler and hasattr(self.hotkey_handler, 'shutdown'):
             self.hotkey_handler.shutdown()
     
     def _create_hotkey_handler(self):

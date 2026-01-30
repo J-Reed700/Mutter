@@ -580,6 +580,9 @@ class SystemTrayIcon(QSystemTrayIcon):
                            f"quit_key={settings.hotkeys.quit_key.toString() if settings.hotkeys.quit_key else 'None'}, "
                            f"record_key={settings.hotkeys.record_key.toString()}")
                 
+                if self.settings_window is not None:
+                    self._disconnect_settings_signals()
+                
                 self.settings_window = SettingsWindow(
                     settings=settings,
                     settings_repository=self.service_manager.recording_service.settings_repository
@@ -595,6 +598,22 @@ class SystemTrayIcon(QSystemTrayIcon):
         self.settings_window.show()
         self.settings_window.raise_()
         self.settings_window.activateWindow()
+    
+    def _disconnect_settings_signals(self):
+        """Safely disconnect all signals from the settings window to prevent memory leaks."""
+        if self.settings_window is None:
+            return
+        
+        try:
+            if hasattr(self.settings_window, 'settings_saved'):
+                try:
+                    self.settings_window.settings_saved.disconnect(self._on_settings_saved)
+                    logger.debug("Disconnected settings_saved signal")
+                except (TypeError, RuntimeError):
+                    # Signal was not connected or already disconnected
+                    pass
+        except Exception as e:
+            logger.warning(f"Error disconnecting settings signals: {e}")
 
     def show_downloads(self):
         """Show the downloads window"""

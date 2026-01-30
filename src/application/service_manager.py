@@ -380,15 +380,39 @@ class ServiceManager(QObject):
         return self._download_manager
     
     def shutdown(self):
-        """Perform clean shutdown of all services."""
+        """Perform clean shutdown of all services.
+        
+        Shutdown order is important to prevent race conditions:
+        1. Disable hotkeys first to prevent new recordings from starting
+        2. Stop any active recording
+        3. Shutdown recording service (hotkey handler, audio recorder)
+        4. Clean up other resources
+        """
         logger.info("Shutting down service manager")
         
-        # Shutdown recording service (which will handle transcription and LLM)
+        # STEP 1: Disable hotkeys first to prevent new recordings during shutdown
+        if self._recording_service and self._recording_service.hotkey_handler:
+            logger.debug("Disabling hotkeys during shutdown")
+            try:
+                if hasattr(self._recording_service.hotkey_handler, 'set_hotkeys_enabled'):
+                    self._recording_service.hotkey_handler.set_hotkeys_enabled(False)
+            except Exception as e:
+                logger.warning(f"Error disabling hotkeys during shutdown: {e}")
+        
+        # STEP 2: Stop any active recording before full shutdown
+        if self._recording_service and self._recording_service.is_recording:
+            logger.info("Stopping active recording during shutdown")
+            try:
+                self._recording_service.stop_recording()
+            except Exception as e:
+                logger.warning(f"Error stopping recording during shutdown: {e}")
+        
+        # STEP 3: Shutdown recording service (which will handle hotkey handler and audio recorder)
         if self._recording_service:
             logger.debug("Shutting down recording service")
             self._recording_service.shutdown()
         
-        # Clean up any resources held by processors
+        # STEP 4: Clean up any resources held by processors
         self._text_processor = None
         self._embedded_processor = None
         

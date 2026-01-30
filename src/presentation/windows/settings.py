@@ -1033,7 +1033,11 @@ class SettingsWindow(QMainWindow):
             username = self.llm_username_edit.text().strip() if hasattr(self, 'llm_username_edit') else ""
             password = self.llm_password_edit.text() if hasattr(self, 'llm_password_edit') else ""
             
-            api_url = self.llm_api_url_edit.text().strip()
+            api_url = self.llm_api_url_edit.text().strip().rstrip('/')
+            if not api_url:
+                api_url = "http://localhost:11434/v1"
+            if not api_url.endswith('/v1'):
+                api_url = f"{api_url}/v1"
             
             # Test basic connectivity
             import requests
@@ -1042,9 +1046,7 @@ class SettingsWindow(QMainWindow):
             auth = HTTPBasicAuth(username, password) if username and password else None
             
             # Get base URL (strip /v1 if present)
-            base_url = api_url.rstrip('/')
-            if base_url.endswith('/v1'):
-                base_url = base_url[:-3]
+            base_url = api_url[:-3] if api_url.endswith('/v1') else api_url
             
             try:
                 # First check basic connectivity

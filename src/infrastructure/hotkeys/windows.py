@@ -69,53 +69,61 @@ class WindowsHotkeyHandler(HotkeyHandler):
             RuntimeError: If window creation fails
         """
         def window_proc(hwnd: int, msg: int, wparam: int, lparam: int) -> bool:
-            if msg == win32con.WM_HOTKEY:
-                # wparam contains the hotkey ID
-                hotkey_id = wparam
-                
-                # For WM_HOTKEY, Windows doesn't provide separate down/up events
-                # We use a toggle pattern: first press starts recording, second press stops
-                logger.debug(f"Hotkey message received: ID={hotkey_id}, lparam={hex(lparam)}")
-                
-                # Check if this is the process text hotkey
-                if self.process_text_hotkey_id is not None and hotkey_id == self.process_text_hotkey_id:
-                    self.process_text_hotkey_pressed.emit()
-                    return True
-                
-                # Try to find which hotkey this corresponds to
-                key_sequence = None
-                for k, v in self.registered_hotkeys.items():
-                    if v == hotkey_id:
-                        key_sequence = k
-                        break
-                
-                if key_sequence:
-                    logger.debug(f"Matched to hotkey: {key_sequence.toString()}")
+            try:
+                if msg == win32con.WM_HOTKEY:
+                    # wparam contains the hotkey ID
+                    hotkey_id = wparam
                     
-                    # Special handling for exit hotkey
-                    if self.exit_hotkey and key_sequence == self.exit_hotkey:
-                        logger.info(f"Exit hotkey detected: {key_sequence.toString()} (ID={hotkey_id}), emitting exit_hotkey_pressed")
-                        self.exit_hotkey_pressed.emit()
+                    # For WM_HOTKEY, Windows doesn't provide separate down/up events
+                    # We use a toggle pattern: first press starts recording, second press stops
+                    logger.debug(f"Hotkey message received: ID={hotkey_id}, lparam={hex(lparam)}")
+                    
+                    # Check if this is the process text hotkey
+                    if self.process_text_hotkey_id is not None and hotkey_id == self.process_text_hotkey_id:
+                        self.process_text_hotkey_pressed.emit()
                         return True
                     
-                    # Regular toggle behavior for recording hotkeys
-                    with self._lock:
-                        if not self._is_key_held:
-                            # First press (start recording)
-                            self._is_key_held = True
-                            logger.debug("Toggling state to RECORDING (emitting hotkey_pressed)")
-                            self.hotkey_pressed.emit()
-                        else:
-                            # Second press (stop recording)
-                            self._is_key_held = False
-                            logger.debug("Toggling state to STOPPED (emitting hotkey_released)")
-                            logger.debug("This should trigger SystemTrayIcon.on_stop_hotkey_pressed via signal connection")
-                            self.hotkey_released.emit()
-                            logger.debug("hotkey_released signal emitted")
-                else:
-                    logger.warning(f"Received hotkey ID {hotkey_id} doesn't match any registered hotkey")
-                
-            return True
+                    # Try to find which hotkey this corresponds to
+                    key_sequence = None
+                    for k, v in self.registered_hotkeys.items():
+                        if v == hotkey_id:
+                            key_sequence = k
+                            break
+                    
+                    if key_sequence:
+                        logger.debug(f"Matched to hotkey: {key_sequence.toString()}")
+                        
+                        # Special handling for exit hotkey
+                        if self.exit_hotkey and key_sequence == self.exit_hotkey:
+                            logger.info(f"Exit hotkey detected: {key_sequence.toString()} (ID={hotkey_id}), emitting exit_hotkey_pressed")
+                            self.exit_hotkey_pressed.emit()
+                            return True
+                        
+                        # Regular toggle behavior for recording hotkeys
+                        with self._lock:
+                            if not self._is_key_held:
+                                # First press (start recording)
+                                self._is_key_held = True
+                                logger.debug("Toggling state to RECORDING (emitting hotkey_pressed)")
+                                self.hotkey_pressed.emit()
+                            else:
+                                # Second press (stop recording)
+                                self._is_key_held = False
+                                logger.debug("Toggling state to STOPPED (emitting hotkey_released)")
+                                logger.debug("This should trigger SystemTrayIcon.on_stop_hotkey_pressed via signal connection")
+                                self.hotkey_released.emit()
+                                logger.debug("hotkey_released signal emitted")
+                    else:
+                        logger.warning(f"Received hotkey ID {hotkey_id} doesn't match any registered hotkey")
+                    
+                return True
+            except KeyboardInterrupt:
+                # Prevent the WNDPROC handler from crashing the app on interrupt signals
+                logger.warning("Hotkey WNDPROC interrupted by KeyboardInterrupt")
+                return True
+            except Exception as e:
+                logger.error(f"Hotkey WNDPROC error: {e}", exc_info=True)
+                return True
             
         wc = win32gui.WNDCLASS()
         wc.lpfnWndProc = window_proc

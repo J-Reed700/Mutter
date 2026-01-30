@@ -3,6 +3,7 @@ import logging
 from typing import Optional, Dict, List, Any, Tuple
 import requests
 from requests.auth import HTTPBasicAuth
+from requests import Session
 import json
 from dataclasses import dataclass
 
@@ -27,8 +28,23 @@ class TextProcessor:
             username: Username for HTTP Basic Auth (optional)
             password: Password for HTTP Basic Auth (optional)
         """
-        self.api_url = api_url
+        normalized_url = (api_url or "").rstrip("/")
+        if normalized_url.endswith("/v1"):
+            self.api_url = normalized_url
+        else:
+            self.api_url = f"{normalized_url}/v1" if normalized_url else "http://localhost:11434/v1"
         self.auth = HTTPBasicAuth(username, password) if username and password else None
+
+        # Use a persistent session to preserve cookies across redirects (SSO/reverse proxy)
+        self.session: Session = requests.Session()
+        if self.auth:
+            self.session.auth = self.auth
+        # Set default headers that work well with reverse proxies
+        self.session.headers.update({
+            "Accept": "application/json, text/plain, */*",
+            "User-Agent": "Mutter/1.0 (+requests)"
+        })
+
         self.available = self._check_availability()
         if self.available:
             logger.info(f"LLM processor initialized with API at {api_url}" + (" (with auth)" if self.auth else ""))
@@ -40,11 +56,9 @@ class TextProcessor:
         try:
             # Just try to reach the base URL - don't require specific endpoints
             # Strip /v1 to get base URL for connectivity check
-            base_url = self.api_url.rstrip('/')
-            if base_url.endswith('/v1'):
-                base_url = base_url[:-3]
+            base_url = self.api_url[:-3] if self.api_url.endswith('/v1') else self.api_url
             
-            response = requests.get(base_url, timeout=5, auth=self.auth, allow_redirects=True)
+            response = self.session.get(base_url, timeout=10, allow_redirects=True)
             
             # Any response means the server is reachable
             logger.info(f"LLM API server responding at {base_url} (status {response.status_code})")
@@ -66,10 +80,12 @@ class TextProcessor:
             return []
             
         try:
-            response = requests.get(f"{self.api_url}/models", timeout=5, auth=self.auth)
+            response = self.session.get(f"{self.api_url}/models", timeout=10, allow_redirects=True)
             if response.status_code == 200:
                 models = response.json().get("data", [])
                 return [model.get("id") for model in models]
+            else:
+                logger.warning(f"Models endpoint returned {response.status_code}")
             return []
         except Exception as e:
             logger.error(f"Error getting available models: {e}")
@@ -132,11 +148,10 @@ class TextProcessor:
                 "max_tokens": 32768  # Very high limit - most modern models support 32k+
             }
             
-            response = requests.post(
+            response = self.session.post(
                 f"{self.api_url}/chat/completions",
                 json=payload,
-                timeout=60,  # 60 second timeout for slower models
-                auth=self.auth
+                timeout=60  # 60 second timeout for slower models
             )
             
             if response.status_code == 200:

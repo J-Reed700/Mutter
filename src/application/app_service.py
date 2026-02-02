@@ -57,7 +57,7 @@ class ApplicationService(QObject):
         
         # Initialize LLM processor if enabled
         self.text_processor = None
-        if self.settings.llm.enabled:
+        if self.settings.llm and self.settings.llm.enabled:
             try:
                 self.text_processor = TextProcessor(api_url=self.settings.llm.api_url)
                 logger.info(f"Initialized LLM processor with API at {self.settings.llm.api_url}")

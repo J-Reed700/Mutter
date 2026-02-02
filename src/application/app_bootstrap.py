@@ -37,6 +37,10 @@ class AppBootstrap:
     
     def __init__(self):
         """Initialize the application bootstrap."""
+        self.service_manager = None
+        self.settings_window = None
+        self.download_manager_window = None
+        
         # Set up Linux-specific configuration before creating QApplication
         if platform.system() == 'Linux':
             try:
@@ -136,14 +140,22 @@ class AppBootstrap:
             
         except Exception as e:
             logger.critical(f"Failed to initialize application: {e}", exc_info=True)
-            self._show_error(f"Failed to initialize application: {str(e)}\n\nPlease check your internet connection and try again.")
-            sys.exit(1)
+            self._show_error(f"Application started with errors: {str(e)}\n\nSome features may not work. Please check logs.")
+            # Do not exit, try to keep running in a degraded state
+            # sys.exit(1)
     
     def _connect_signals(self):
         """Connect signals between components."""
         logger.debug("Connecting signals between components")
         
+        if not self.service_manager:
+            logger.error("Service manager is None, cannot connect signals")
+            return
+            
         recording_service = self.service_manager.recording_service
+        if not recording_service:
+            logger.error("Recording service is None, cannot connect signals")
+            return
         
         # Recording state signals
         recording_service.recording_started.connect(self.tray.on_recording_started)
@@ -182,6 +194,10 @@ class AppBootstrap:
         """Show the settings dialog."""
         logger.debug("Showing settings dialog")
         
+        if not self.service_manager:
+            self._show_error("Cannot open settings: Service manager is not initialized.")
+            return
+            
         # Disable hotkeys while settings dialog is open
         if hasattr(self.service_manager.recording_service, 'hotkey_handler') and \
            hasattr(self.service_manager.recording_service.hotkey_handler, 'set_hotkeys_enabled'):
@@ -189,6 +205,10 @@ class AppBootstrap:
         
        # Create a new window if it doesn't exist or was closed
         if self.settings_window is None or not self.settings_window.isVisible():
+            # MEMORY LEAK FIX: Disconnect old signals before creating new window
+            if self.settings_window is not None:
+                self._disconnect_settings_window_signals()
+            
             self.settings_window = SettingsWindow(
                 settings=self.service_manager.settings,
                 settings_repository=self.service_manager.recording_service.settings_repository
@@ -201,6 +221,21 @@ class AppBootstrap:
         self.settings_window.show()
         self.settings_window.raise_()
         self.settings_window.activateWindow()
+    
+    def _disconnect_settings_window_signals(self):
+        """Safely disconnect all signals from the settings window to prevent memory leaks."""
+        if self.settings_window is None:
+            return
+        
+        try:
+            try:
+                self.settings_window.settings_saved.disconnect(self._on_settings_saved)
+                logger.debug("Disconnected settings_saved signal from AppBootstrap")
+            except (TypeError, RuntimeError):
+                # Signal was not connected or already disconnected
+                pass
+        except Exception as e:
+            logger.warning(f"Error disconnecting settings window signals: {e}")
     
     def show_downloads(self):
         """Show the downloads window."""
@@ -296,6 +331,15 @@ class AppBootstrap:
     def shutdown(self):
         """Clean up resources before shutdown."""
         logger.info("Shutting down application")
+        
+        # Clean up tray icon and its toast
+        if hasattr(self, 'tray') and self.tray:
+            if hasattr(self.tray, 'toast') and self.tray.toast:
+                self.tray.toast.cleanup()
+        
+        # Disconnect settings window signals
+        if hasattr(self, 'settings_window') and self.settings_window:
+            self._disconnect_settings_window_signals()
         
         # Shutdown service manager
         if hasattr(self, 'service_manager'):

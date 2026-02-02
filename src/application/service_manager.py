@@ -5,9 +5,10 @@ infrastructure services and domain entities.
 
 import logging
 import platform
+import threading
 from typing import Optional, Dict, Any
 
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
 from ..domain.settings import Settings, LLMSettings
 from ..infrastructure.persistence.settings_repository import SettingsRepository
@@ -33,14 +34,23 @@ class ServiceManager(QObject):
     4. Coordinate application shutdown
     """
     
+    # Signal to report health check results from background thread
+    health_check_complete = Signal(bool, bool)  # audio_healthy, transcriber_healthy
+
     def __init__(self):
         """Initialize the service manager and all infrastructure services."""
         super().__init__()
         logger.info("Initializing service manager")
         
+        # Connect health check signal
+        self.health_check_complete.connect(self._on_health_check_complete)
+        
         # Core dependencies
         self._settings_repository = None
         self._settings = None
+        
+        # Thread safety lock for service access
+        self._service_lock = threading.RLock()
         
         # Services
         self._recording_service = None
@@ -57,8 +67,151 @@ class ServiceManager(QObject):
         self._initialize_infrastructure()
         self._initialize_services()
         
+        # Setup health monitoring
+        self._setup_health_monitoring()
+        
         logger.info("Service manager initialization complete")
     
+    def _setup_health_monitoring(self):
+        """Setup periodic health checks for services."""
+        logger.debug("Setting up service health monitoring")
+        self._health_timer = QTimer(self)
+        self._health_timer.timeout.connect(self._check_health)
+        self._health_timer.start(30000)  # Check every 30 seconds
+        
+        # Connect to recording service failure signal
+        if self._recording_service:
+            self._recording_service.recording_failed.connect(self._handle_recording_failure)
+
+    def _check_health(self):
+        """Check health of critical services in a background thread."""
+        logger.debug("Starting periodic service health check")
+        
+        def check_task():
+            audio_healthy = True
+            transcriber_healthy = True
+            
+            with self._service_lock:
+                # Capture references safely within lock
+                audio_recorder = self._audio_recorder
+                transcriber = self._transcriber
+            
+            # Check Audio Recorder
+            if audio_recorder:
+                try:
+                    if not audio_recorder.is_healthy():
+                        audio_healthy = False
+                except Exception as e:
+                    logger.error(f"Error checking audio health: {e}")
+                    audio_healthy = False
+            
+            # Check Transcriber
+            if transcriber:
+                try:
+                    if not transcriber.is_healthy():
+                        transcriber_healthy = False
+                except Exception as e:
+                    logger.error(f"Error checking transcriber health: {e}")
+                    transcriber_healthy = False
+            
+            self.health_check_complete.emit(audio_healthy, transcriber_healthy)
+            
+        # Run check in background thread to avoid blocking UI
+        threading.Thread(target=check_task, daemon=True).start()
+
+    @Slot(bool, bool)
+    def _on_health_check_complete(self, audio_healthy, transcriber_healthy):
+        """Handle health check results on the main thread."""
+        if not audio_healthy:
+            logger.warning("Audio recorder health check failed - attempting recovery")
+            self._recover_audio_service()
+            
+        if not transcriber_healthy:
+            logger.warning("Transcriber health check failed - attempting recovery")
+            self._recover_transcription_service()
+            
+    def _handle_recording_failure(self, error_message):
+        """Handle failure reported by recording service."""
+        logger.warning(f"Recording service reported failure: {error_message}")
+        
+        # Analyze error to determine recovery strategy
+        error_lower = error_message.lower()
+        
+        if "audio" in error_lower or "device" in error_lower or "input" in error_lower:
+            logger.info("Failure appears to be audio-related, recovering audio service")
+            self._recover_audio_service()
+        elif "transcri" in error_lower or "model" in error_lower:
+            logger.info("Failure appears to be transcription-related, recovering transcription service")
+            self._recover_transcription_service()
+        else:
+            logger.warning("Unknown error type, attempting full infrastructure recovery")
+            self._recover_audio_service()
+            self._recover_transcription_service()
+
+    def _recover_audio_service(self):
+        """Recover the audio recording service."""
+        logger.info("Recovering audio service...")
+        
+        # Cleanup old recorder to prevent resource leaks
+        with self._service_lock:
+            old_recorder = self._audio_recorder
+            
+        if old_recorder:
+            try:
+                logger.info("Shutting down unhealthy audio recorder")
+                if hasattr(old_recorder, 'shutdown'):
+                    old_recorder.shutdown()
+                elif hasattr(old_recorder, 'stop_recording'):
+                    old_recorder.stop_recording()
+            except Exception as e:
+                logger.warning(f"Error shutting down old recorder: {e}")
+
+        try:
+            # Re-initialize audio recorder with current settings
+            # If specific device failed, we might want to fall back to default,
+            # but for now let's try to reload with configured settings first.
+            # If that fails, AudioRecorder logic (which we improved) handles device resolution.
+            
+            new_recorder = AudioRecorder(
+                sample_rate=self._settings.audio.sample_rate,
+                channels=self._settings.audio.channels,
+                device=self._settings.audio.input_device
+            )
+            
+            if new_recorder.is_healthy():
+                with self._service_lock:
+                    self._audio_recorder = new_recorder
+                    if self._recording_service:
+                        self._recording_service.set_audio_recorder(new_recorder)
+                logger.info("Audio service recovered successfully")
+            else:
+                logger.error("Failed to recover audio service - new recorder is unhealthy")
+                
+        except Exception as e:
+            logger.error(f"Exception during audio service recovery: {e}")
+
+    def _recover_transcription_service(self):
+        """Recover the transcription service."""
+        logger.info("Recovering transcription service...")
+        try:
+            new_transcriber = Transcriber(
+                model_size=self._settings.transcription.model,
+                device=self._settings.transcription.device,
+                compute_type="int8"
+            )
+            
+            if new_transcriber.is_healthy():
+                with self._service_lock:
+                    self._transcriber = new_transcriber
+                    if self._recording_service:
+                        self._recording_service.set_transcriber(new_transcriber)
+                logger.info("Transcription service recovered successfully")
+            else:
+                logger.error("Failed to recover transcription service - new transcriber is unhealthy")
+                
+        except Exception as e:
+            logger.error(f"Exception during transcription service recovery: {e}")
+            
     def _initialize_core_dependencies(self):
         """Initialize core dependencies like settings."""
         logger.debug("Initializing core dependencies")
@@ -80,28 +233,43 @@ class ServiceManager(QObject):
         # Initialize download manager first
         self._download_manager = DownloadManager()
         
-        # Initialize audio recorder
-        self._audio_recorder = AudioRecorder(
-            sample_rate=self._settings.audio.sample_rate,
-            channels=self._settings.audio.channels,
-            device=self._settings.audio.input_device
-        )
+        with self._service_lock:
+            # Initialize audio recorder
+            try:
+                self._audio_recorder = AudioRecorder(
+                    sample_rate=self._settings.audio.sample_rate,
+                    channels=self._settings.audio.channels,
+                    device=self._settings.audio.input_device
+                )
+            except Exception as e:
+                logger.error(f"Failed to initialize audio recorder: {e}")
+                # Create a dummy or broken recorder to prevent attribute errors later
+                # Ideally AudioRecorder should be robust enough to init even if broken
+                self._audio_recorder = None
+
+            # Initialize transcriber
+            try:
+                self._transcriber = Transcriber(
+                    model_size=self._settings.transcription.model,
+                    device=self._settings.transcription.device,
+                    compute_type="int8"
+                )
+            except Exception as e:
+                logger.error(f"Failed to initialize transcriber: {e}")
+                self._transcriber = None
         
-        # Initialize transcriber
-        self._transcriber = Transcriber(
-            model_size=self._settings.transcription.model,
-            device=self._settings.transcription.device,
-            compute_type="int8"
-        )
-        
-        # Set LLM settings to disabled
-        if hasattr(self._settings, 'llm'):
-            self._settings.llm.enabled = False
-            logger.info("LLM features have been disabled")
+        # Log LLM status
+        if hasattr(self._settings, 'llm') and self._settings.llm:
+            logger.info(f"LLM settings: enabled={self._settings.llm.enabled}")
     
     def _initialize_llm_processors(self):
         """Initialize LLM processors based on settings."""
         logger.debug("Initializing LLM processors")
+        
+        # Safety check
+        if not self._settings.llm:
+            logger.warning("LLM settings not initialized, skipping LLM processor initialization")
+            return
         
         # Initialize external API processor if not using embedded model
         if not self._settings.llm.use_embedded_model:
@@ -152,7 +320,7 @@ class ServiceManager(QObject):
                 self._recording_service.settings = self._settings
         
         # Reinitialize LLM processors if needed
-        if self._settings.llm.enabled:
+        if self._settings.llm and self._settings.llm.enabled:
             llm_settings_changed = (
                 not hasattr(self, '_previous_llm_settings') or
                 self._settings.llm.model != getattr(self, '_previous_llm_settings', {}).get('model') or
@@ -212,10 +380,34 @@ class ServiceManager(QObject):
         return self._download_manager
     
     def shutdown(self):
-        """Perform clean shutdown of all services."""
+        """Perform clean shutdown of all services.
+        
+        Shutdown order is important to prevent race conditions:
+        1. Disable hotkeys first to prevent new recordings from starting
+        2. Stop any active recording
+        3. Shutdown recording service (hotkey handler, audio recorder)
+        4. Clean up other resources
+        """
         logger.info("Shutting down service manager")
         
-        # Shutdown recording service (which will handle transcription and LLM)
+        # STEP 1: Disable hotkeys first to prevent new recordings during shutdown
+        if self._recording_service and self._recording_service.hotkey_handler:
+            logger.debug("Disabling hotkeys during shutdown")
+            try:
+                if hasattr(self._recording_service.hotkey_handler, 'set_hotkeys_enabled'):
+                    self._recording_service.hotkey_handler.set_hotkeys_enabled(False)
+            except Exception as e:
+                logger.warning(f"Error disabling hotkeys during shutdown: {e}")
+        
+        # STEP 2: Stop any active recording before full shutdown
+        if self._recording_service and self._recording_service.is_recording:
+            logger.info("Stopping active recording during shutdown")
+            try:
+                self._recording_service.stop_recording()
+            except Exception as e:
+                logger.warning(f"Error stopping recording during shutdown: {e}")
+        
+        # STEP 3: Shutdown recording service (which will handle hotkey handler and audio recorder)
         if self._recording_service:
             logger.debug("Shutting down recording service")
             try:
@@ -232,7 +424,7 @@ class ServiceManager(QObject):
             except Exception as e:
                 logger.error(f"Error cleaning up audio recorder: {e}")
         
-        # Clean up any resources held by processors
+        # STEP 4: Clean up any resources held by processors
         self._text_processor = None
         self._embedded_processor = None
         

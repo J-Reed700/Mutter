@@ -93,12 +93,13 @@ class SettingsRepository:
             },
             "llm": {
                 "enabled": settings.llm.enabled if hasattr(settings, 'llm') and settings.llm else False,
-                "api_url": settings.llm.api_url if hasattr(settings, 'llm') and settings.llm else "http://localhost:8080/v1",
-                "model": settings.llm.model if hasattr(settings, 'llm') and settings.llm else "llama3",
-                "default_processing_type": settings.llm.default_processing_type if hasattr(settings, 'llm') and settings.llm else "summarize",
-                "custom_prompt_templates": settings.llm.custom_prompt_templates if hasattr(settings, 'llm') and settings.llm and settings.llm.custom_prompt_templates else None,
+                "api_url": settings.llm.api_url if hasattr(settings, 'llm') and settings.llm else "http://localhost:11434/v1",
+                "model": settings.llm.model if hasattr(settings, 'llm') and settings.llm else "llama3.2",
+                "custom_prompt": settings.llm.custom_prompt if hasattr(settings, 'llm') and settings.llm else "Fix any grammar, spelling, and punctuation errors in the following text. Keep the meaning exactly the same. Only output the corrected text, nothing else:\n\n{text}",
                 "use_embedded_model": settings.llm.use_embedded_model if hasattr(settings, 'llm') and settings.llm else False,
-                "embedded_model_name": settings.llm.embedded_model_name if hasattr(settings, 'llm') and settings.llm else "distilbart-cnn-12-6"
+                "embedded_model_name": settings.llm.embedded_model_name if hasattr(settings, 'llm') and settings.llm else "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+                "api_username": settings.llm.api_username if hasattr(settings, 'llm') and settings.llm else "",
+                "api_password": settings.llm.api_password if hasattr(settings, 'llm') and settings.llm else ""
             },
             "appearance": {
                 "show_notifications": settings.appearance.show_notifications if hasattr(settings, 'appearance') and settings.appearance else True,
@@ -132,12 +133,13 @@ class SettingsRepository:
         if "llm" in data:
             llm_settings = LLMSettings(
                 enabled=data["llm"].get("enabled", False),
-                api_url=data["llm"].get("api_url", "http://localhost:8080/v1"),
-                model=data["llm"].get("model", "llama3"),
-                default_processing_type=data["llm"].get("default_processing_type", "summarize"),
-                custom_prompt_templates=data["llm"].get("custom_prompt_templates", None),
+                api_url=data["llm"].get("api_url", "http://localhost:11434/v1"),
+                model=data["llm"].get("model", "llama3.2"),
+                custom_prompt=data["llm"].get("custom_prompt", "Fix any grammar, spelling, and punctuation errors in the following text. Keep the meaning exactly the same. Only output the corrected text, nothing else:\n\n{text}"),
                 use_embedded_model=data["llm"].get("use_embedded_model", False),
-                embedded_model_name=data["llm"].get("embedded_model_name", "distilbart-cnn-12-6")
+                embedded_model_name=data["llm"].get("embedded_model_name", "Qwen/Qwen2.5-1.5B-Instruct-GGUF"),
+                api_username=data["llm"].get("api_username", ""),
+                api_password=data["llm"].get("api_password", "")
             )
         
         # Create appearance settings if present

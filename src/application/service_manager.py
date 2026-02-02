@@ -410,13 +410,28 @@ class ServiceManager(QObject):
         # STEP 3: Shutdown recording service (which will handle hotkey handler and audio recorder)
         if self._recording_service:
             logger.debug("Shutting down recording service")
-            self._recording_service.shutdown()
+            try:
+                self._recording_service.shutdown()
+            except Exception as e:
+                logger.error(f"Error shutting down recording service: {e}")
+        
+        # Clean up audio recorder explicitly
+        if self._audio_recorder:
+            logger.debug("Cleaning up audio recorder")
+            try:
+                if hasattr(self._audio_recorder, 'cleanup'):
+                    self._audio_recorder.cleanup()
+            except Exception as e:
+                logger.error(f"Error cleaning up audio recorder: {e}")
         
         # STEP 4: Clean up any resources held by processors
         self._text_processor = None
         self._embedded_processor = None
         
         # Save settings on shutdown
-        self.save_settings()
+        try:
+            self.save_settings()
+        except Exception as e:
+            logger.error(f"Error saving settings during shutdown: {e}")
         
         logger.info("Service manager shutdown complete") 

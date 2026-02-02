@@ -625,13 +625,30 @@ class RecordingService(QObject):
         """
         logger.debug("Shutting down recording service")
         
-        # Clear audio recorder buffer to free memory (recording should already be stopped)
+        # Stop any ongoing recording first (defensive - service_manager should handle this)
+        if self.is_recording:
+            logger.info("Stopping ongoing recording during shutdown")
+            try:
+                self.audio_recorder.stop_recording()
+            except Exception as e:
+                logger.error(f"Error stopping recording during shutdown: {e}")
+            self.is_recording = False
+        
+        # Clear audio recorder buffer to free memory
         if self.audio_recorder:
-            self.audio_recorder._clear_audio_buffer()
+            try:
+                self.audio_recorder._clear_audio_buffer()
+            except Exception as e:
+                logger.error(f"Error clearing audio recorder buffer: {e}")
         
         # Shutdown hotkey handler (stops listener, cleanup timer, sleep/wake observer)
         if self.hotkey_handler and hasattr(self.hotkey_handler, 'shutdown'):
-            self.hotkey_handler.shutdown()
+            try:
+                self.hotkey_handler.shutdown()
+            except Exception as e:
+                logger.error(f"Error shutting down hotkey handler: {e}")
+        
+        logger.debug("Recording service shutdown complete")
     
     def _create_hotkey_handler(self):
         """Create the appropriate hotkey handler for the current platform"""

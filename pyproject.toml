@@ -23,6 +23,7 @@ transformers = "^4.20.0"
 python-xlib = {version = "^0.33", platform = "linux"}
 pynput = "^1.8.1"
 dbus-python = {version = "^1.4.0", platform = "linux"}
+evdev = {version = "^1.6.0", platform = "linux"}
 
 [tool.poetry.extras]
 llm = ["torch", "transformers"]

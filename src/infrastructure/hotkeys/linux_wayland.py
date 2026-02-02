@@ -7,11 +7,13 @@ the 'input' group to access /dev/input/event* devices.
 
 from .base import HotkeyHandler
 from PySide6.QtGui import QKeySequence
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, Qt, QMetaObject, Q_ARG
 import logging
-from typing import Dict, Any, Optional, Set
+from typing import Dict, Any, Optional, Set, List
 import threading
 import os
+import time
+import weakref
 
 logger = logging.getLogger(__name__)
 
@@ -43,31 +45,42 @@ class WaylandHotkeyHandler(HotkeyHandler):
         self.registered_hotkeys: Dict[QKeySequence, Any] = {}
         self.registered_process_text_hotkey: Optional[QKeySequence] = None
         self.exit_hotkey: Optional[QKeySequence] = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()  # Use RLock for reentrant locking
         self._is_key_held = False
         self._current_keys: Set[str] = set()
         self._should_stop = False
         self._listener_thread = None
-        self._keyboards = []
+        self._keyboards: List = []
+        self._device_paths: Set[str] = set()  # Track device paths
+        self._reconnect_interval = 5.0  # Seconds between device reconnection attempts
+        self._last_reconnect_attempt = 0
         
         # Import and initialize evdev
         self._setup_keyboard_listener()
         
-    def _find_keyboard_devices(self):
+    def _find_keyboard_devices(self) -> List:
         """Find all keyboard input devices."""
         _import_evdev()
         keyboards = []
         
-        devices = [evdev.InputDevice(path) for path in evdev.list_devices()]
-        for device in devices:
-            capabilities = device.capabilities()
-            # Check if device has key events (EV_KEY = 1)
-            if evdev.ecodes.EV_KEY in capabilities:
-                keys = capabilities[evdev.ecodes.EV_KEY]
-                # Check if it has typical keyboard keys (KEY_A = 30)
-                if evdev.ecodes.KEY_A in keys:
-                    logger.debug(f"Found keyboard device: {device.name} at {device.path}")
-                    keyboards.append(device)
+        try:
+            device_paths = evdev.list_devices()
+            for path in device_paths:
+                try:
+                    device = evdev.InputDevice(path)
+                    capabilities = device.capabilities()
+                    # Check if device has key events (EV_KEY = 1)
+                    if evdev.ecodes.EV_KEY in capabilities:
+                        keys = capabilities[evdev.ecodes.EV_KEY]
+                        # Check if it has typical keyboard keys (KEY_A = 30)
+                        if evdev.ecodes.KEY_A in keys:
+                            logger.debug(f"Found keyboard device: {device.name} at {device.path}")
+                            keyboards.append(device)
+                except (OSError, PermissionError) as e:
+                    logger.debug(f"Could not access device {path}: {e}")
+                    continue
+        except Exception as e:
+            logger.error(f"Error listing input devices: {e}")
         
         return keyboards
         
@@ -75,6 +88,7 @@ class WaylandHotkeyHandler(HotkeyHandler):
         """Set up the evdev keyboard listener."""
         try:
             self._keyboards = self._find_keyboard_devices()
+            self._device_paths = {kb.path for kb in self._keyboards}
             
             if not self._keyboards:
                 raise RuntimeError(
@@ -87,7 +101,8 @@ class WaylandHotkeyHandler(HotkeyHandler):
             self._should_stop = False
             self._listener_thread = threading.Thread(
                 target=self._listen_loop,
-                daemon=True
+                daemon=True,
+                name="EvdevHotkeyListener"
             )
             self._listener_thread.start()
             logger.info("evdev keyboard listener started successfully")
@@ -103,36 +118,149 @@ class WaylandHotkeyHandler(HotkeyHandler):
             logger.error(f"Failed to initialize evdev keyboard listener: {e}")
             raise RuntimeError(f"Failed to initialize hotkey handler: {e}") from e
     
+    def _refresh_devices(self):
+        """Refresh the list of keyboard devices, handling disconnects and reconnects."""
+        _import_evdev()
+        
+        current_time = time.time()
+        if current_time - self._last_reconnect_attempt < self._reconnect_interval:
+            return False
+        
+        self._last_reconnect_attempt = current_time
+        
+        try:
+            # Find new keyboards
+            new_keyboards = self._find_keyboard_devices()
+            new_paths = {kb.path for kb in new_keyboards}
+            
+            # Close devices that are no longer present
+            with self._lock:
+                for kb in self._keyboards[:]:
+                    if kb.path not in new_paths:
+                        try:
+                            logger.info(f"Closing disconnected device: {kb.name}")
+                            kb.close()
+                        except Exception as e:
+                            logger.debug(f"Error closing device: {e}")
+                        self._keyboards.remove(kb)
+                
+                # Add new devices
+                for kb in new_keyboards:
+                    if kb.path not in self._device_paths:
+                        logger.info(f"New keyboard device found: {kb.name} at {kb.path}")
+                        self._keyboards.append(kb)
+                
+                self._device_paths = {kb.path for kb in self._keyboards}
+                
+            return len(self._keyboards) > 0
+            
+        except Exception as e:
+            logger.error(f"Error refreshing devices: {e}")
+            return False
+    
     def _listen_loop(self):
         """Main loop for reading keyboard events."""
         _import_evdev()
         
+        from selectors import DefaultSelector, EVENT_READ
+        selector = None
+        
         try:
-            # Use select to monitor multiple devices
-            from selectors import DefaultSelector, EVENT_READ
-            selector = DefaultSelector()
-            
-            for keyboard in self._keyboards:
-                selector.register(keyboard, EVENT_READ)
-            
             while not self._should_stop:
-                # Wait for events with timeout
-                for key, mask in selector.select(timeout=0.1):
-                    device = key.fileobj
-                    try:
-                        for event in device.read():
-                            if event.type == evdev.ecodes.EV_KEY:
-                                self._handle_key_event(event)
-                    except BlockingIOError:
-                        pass
-                    except OSError as e:
-                        # Device disconnected
-                        logger.warning(f"Device error: {e}")
+                # Create or recreate selector with current devices
+                if selector is None:
+                    selector = DefaultSelector()
+                    with self._lock:
+                        for keyboard in self._keyboards:
+                            try:
+                                selector.register(keyboard, EVENT_READ)
+                            except (ValueError, OSError) as e:
+                                logger.debug(f"Could not register device {keyboard.path}: {e}")
+                
+                if not self._keyboards:
+                    # No devices available, wait and try to reconnect
+                    logger.warning("No keyboard devices available, waiting for reconnection...")
+                    time.sleep(self._reconnect_interval)
+                    if self._refresh_devices():
+                        # Recreate selector with new devices
+                        if selector:
+                            try:
+                                selector.close()
+                            except Exception:
+                                pass
+                        selector = None
+                    continue
+                
+                try:
+                    # Wait for events with timeout
+                    events = selector.select(timeout=0.5)
+                    
+                    devices_to_remove = []
+                    
+                    for key, mask in events:
+                        device = key.fileobj
+                        try:
+                            for event in device.read():
+                                if event.type == evdev.ecodes.EV_KEY:
+                                    self._handle_key_event(event)
+                        except BlockingIOError:
+                            pass
+                        except OSError as e:
+                            # Device disconnected or error
+                            if e.errno == 19:  # ENODEV - No such device
+                                logger.warning(f"Device disconnected: {device.path}")
+                                devices_to_remove.append(device)
+                            else:
+                                logger.warning(f"Device error on {device.path}: {e}")
+                                devices_to_remove.append(device)
+                    
+                    # Remove disconnected devices and refresh
+                    if devices_to_remove:
+                        for device in devices_to_remove:
+                            try:
+                                selector.unregister(device)
+                            except (KeyError, ValueError):
+                                pass
+                            try:
+                                device.close()
+                            except Exception:
+                                pass
+                            with self._lock:
+                                if device in self._keyboards:
+                                    self._keyboards.remove(device)
+                                self._device_paths.discard(device.path)
+                        
+                        # Try to refresh devices
+                        self._refresh_devices()
+                        
+                        # Recreate selector
+                        try:
+                            selector.close()
+                        except Exception:
+                            pass
+                        selector = None
+                        
+                except (OSError, ValueError) as e:
+                    logger.warning(f"Selector error: {e}")
+                    # Recreate selector
+                    if selector:
+                        try:
+                            selector.close()
+                        except Exception:
+                            pass
+                        selector = None
+                    time.sleep(0.5)
+                    self._refresh_devices()
                         
         except Exception as e:
             logger.error(f"Error in evdev listener loop: {e}")
         finally:
-            selector.close()
+            if selector:
+                try:
+                    selector.close()
+                except Exception:
+                    pass
+            logger.debug("Evdev listener loop exited")
     
     def _handle_key_event(self, event):
         """Handle a key event from evdev."""
@@ -148,6 +276,24 @@ class WaylandHotkeyHandler(HotkeyHandler):
         elif event.value == 0:  # Key release
             self._on_release(key_str)
     
+    def _emit_signal_safely(self, signal):
+        """Emit a signal safely from a background thread using queued connection."""
+        try:
+            # Use QMetaObject.invokeMethod for thread-safe signal emission
+            # This ensures the signal is processed in the main thread
+            QMetaObject.invokeMethod(
+                self,
+                lambda: signal.emit(),
+                Qt.ConnectionType.QueuedConnection
+            )
+        except Exception as e:
+            logger.error(f"Error emitting signal: {e}")
+            # Fallback to direct emission (may cause issues but better than nothing)
+            try:
+                signal.emit()
+            except Exception as e2:
+                logger.error(f"Fallback signal emission also failed: {e2}")
+    
     def _on_press(self, key_str: str):
         """Handle key press events."""
         try:
@@ -159,13 +305,13 @@ class WaylandHotkeyHandler(HotkeyHandler):
                 if (self.registered_process_text_hotkey and 
                     self._check_hotkey_match(self.registered_process_text_hotkey)):
                     logger.debug("Process text hotkey pressed")
-                    self.process_text_hotkey_pressed.emit()
+                    self._emit_signal_safely(self.process_text_hotkey_pressed)
                     return
                     
                 # Check if this is the exit hotkey
                 if self.exit_hotkey and self._check_hotkey_match(self.exit_hotkey):
                     logger.info(f"Exit hotkey detected: {self._current_keys}")
-                    self.exit_hotkey_pressed.emit()
+                    self._emit_signal_safely(self.exit_hotkey_pressed)
                     return
                     
                 # Regular hotkey handling
@@ -174,7 +320,7 @@ class WaylandHotkeyHandler(HotkeyHandler):
                         if not self._is_key_held:
                             self._is_key_held = True
                             logger.debug(f"Hotkey pressed: {self._current_keys}")
-                            self.hotkey_pressed.emit()
+                            self._emit_signal_safely(self.hotkey_pressed)
                         return
                         
         except Exception as e:
@@ -184,7 +330,7 @@ class WaylandHotkeyHandler(HotkeyHandler):
         """Handle key release events."""
         try:
             with self._lock:
-                import time
+                # Small delay to prevent premature stopping
                 time.sleep(0.1)
                 
                 # Check if this was a registered hotkey BEFORE removing the key
@@ -193,13 +339,12 @@ class WaylandHotkeyHandler(HotkeyHandler):
                         if self._is_key_held:
                             self._is_key_held = False
                             logger.debug(f"Hotkey released: {self._current_keys}")
-                            self.hotkey_released.emit()
+                            self._emit_signal_safely(self.hotkey_released)
                             if key_str in self._current_keys:
-                                self._current_keys.remove(key_str)
+                                self._current_keys.discard(key_str)
                             return
                 
-                if key_str in self._current_keys:
-                    self._current_keys.remove(key_str)
+                self._current_keys.discard(key_str)
                         
         except Exception as e:
             logger.error(f"Error handling key release: {e}")
@@ -371,20 +516,30 @@ class WaylandHotkeyHandler(HotkeyHandler):
         self._should_stop = True
         
         if self._listener_thread:
-            self._listener_thread.join(timeout=1.0)
-            
-        for keyboard in self._keyboards:
-            try:
-                keyboard.close()
-            except Exception as e:
-                logger.error(f"Error closing keyboard device: {e}")
+            self._listener_thread.join(timeout=2.0)
+            if self._listener_thread.is_alive():
+                logger.warning("Listener thread did not terminate in time")
+            self._listener_thread = None
+        
+        with self._lock:
+            for keyboard in self._keyboards:
+                try:
+                    keyboard.close()
+                except Exception as e:
+                    logger.debug(f"Error closing keyboard device: {e}")
+            self._keyboards.clear()
+            self._device_paths.clear()
+        
+        logger.debug("Evdev hotkey handler shutdown complete")
                 
     def __del__(self):
         """Cleanup on deletion."""
-        self.shutdown()
+        try:
+            self.shutdown()
+        except Exception:
+            pass
         
     def is_key_held(self) -> bool:
         """Returns whether the hotkey is currently being held down."""
         with self._lock:
             return self._is_key_held
-

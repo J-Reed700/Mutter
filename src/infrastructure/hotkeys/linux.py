@@ -1,6 +1,6 @@
 from .base import HotkeyHandler
 from PySide6.QtGui import QKeySequence
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QMetaObject
 import logging
 from typing import Dict, Any, Optional, Set
 import threading
@@ -24,7 +24,7 @@ class LinuxHotkeyHandler(HotkeyHandler):
         self.registered_process_text_hotkey: Optional[QKeySequence] = None
         self.process_text_hotkey_id: Optional[int] = None
         self.exit_hotkey: Optional[QKeySequence] = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()  # Use RLock for reentrant locking
         self._is_key_held = False
         self._listener = None
         self._current_keys: Set[str] = set()
@@ -46,6 +46,24 @@ class LinuxHotkeyHandler(HotkeyHandler):
         except Exception as e:
             logger.error(f"Failed to initialize keyboard listener: {e}")
             raise RuntimeError(f"Failed to initialize hotkey handler: {e}")
+    
+    def _emit_signal_safely(self, signal):
+        """Emit a signal safely from a background thread using queued connection."""
+        try:
+            # Use QMetaObject.invokeMethod for thread-safe signal emission
+            # This ensures the signal is processed in the main thread
+            QMetaObject.invokeMethod(
+                self,
+                lambda: signal.emit(),
+                Qt.ConnectionType.QueuedConnection
+            )
+        except Exception as e:
+            logger.error(f"Error emitting signal: {e}")
+            # Fallback to direct emission (may cause issues but better than nothing)
+            try:
+                signal.emit()
+            except Exception as e2:
+                logger.error(f"Fallback signal emission also failed: {e2}")
             
     def _on_press(self, key):
         """Handle key press events."""
@@ -63,13 +81,13 @@ class LinuxHotkeyHandler(HotkeyHandler):
                 if (self.registered_process_text_hotkey and 
                     self._check_hotkey_match(self.registered_process_text_hotkey)):
                     logger.debug("Process text hotkey pressed")
-                    self.process_text_hotkey_pressed.emit()
+                    self._emit_signal_safely(self.process_text_hotkey_pressed)
                     return
                     
                 # Check if this is the exit hotkey
                 if self.exit_hotkey and self._check_hotkey_match(self.exit_hotkey):
                     logger.info(f"Exit hotkey detected: {self._current_keys}")
-                    self.exit_hotkey_pressed.emit()
+                    self._emit_signal_safely(self.exit_hotkey_pressed)
                     return
                     
                 # Regular hotkey handling
@@ -78,7 +96,7 @@ class LinuxHotkeyHandler(HotkeyHandler):
                         if not self._is_key_held:
                             self._is_key_held = True
                             logger.debug(f"Hotkey pressed: {self._current_keys}")
-                            self.hotkey_pressed.emit()
+                            self._emit_signal_safely(self.hotkey_pressed)
                         return
                         
         except Exception as e:
@@ -102,17 +120,15 @@ class LinuxHotkeyHandler(HotkeyHandler):
                         if self._is_key_held:
                             self._is_key_held = False
                             logger.debug(f"Hotkey released: {self._current_keys}")
-                            self.hotkey_released.emit()
+                            self._emit_signal_safely(self.hotkey_released)
                             # Remove the key after emitting the signal
-                            if key_str in self._current_keys:
-                                self._current_keys.remove(key_str)
-                                logger.debug(f"Current keys after release: {self._current_keys}")
+                            self._current_keys.discard(key_str)
+                            logger.debug(f"Current keys after release: {self._current_keys}")
                             return
                 
                 # If no hotkey match, just remove the key
-                if key_str in self._current_keys:
-                    self._current_keys.remove(key_str)
-                    logger.debug(f"Current keys after release: {self._current_keys}")
+                self._current_keys.discard(key_str)
+                logger.debug(f"Current keys after release: {self._current_keys}")
                         
         except Exception as e:
             logger.error(f"Error handling key release: {e}")
@@ -204,7 +220,7 @@ class LinuxHotkeyHandler(HotkeyHandler):
                     return None
                     
             # Handle regular keys
-            if hasattr(key, 'char'):
+            if hasattr(key, 'char') and key.char:
                 return key.char.upper()
                 
             return None
@@ -290,19 +306,34 @@ class LinuxHotkeyHandler(HotkeyHandler):
     def shutdown(self) -> None:
         """Clean up resources before shutdown."""
         logger.debug("Shutting down hotkey handler")
+        self._should_stop = True
         
         # Stop the keyboard listener
         if self._listener:
             try:
                 self._listener.stop()
+                # Wait for listener thread to finish
+                if hasattr(self._listener, 'join'):
+                    self._listener.join(timeout=1.0)
             except Exception as e:
-                logger.error(f"Error stopping keyboard listener: {e}")
+                logger.debug(f"Error stopping keyboard listener: {e}")
+            self._listener = None
+        
+        # Clear state
+        with self._lock:
+            self.registered_hotkeys.clear()
+            self._current_keys.clear()
+        
+        logger.debug("Hotkey handler shutdown complete")
                 
     def __del__(self):
         """Cleanup registered hotkeys on deletion."""
-        self.shutdown()
+        try:
+            self.shutdown()
+        except Exception:
+            pass
         
     def is_key_held(self) -> bool:
         """Returns whether the hotkey is currently being held down."""
         with self._lock:
-            return self._is_key_held 
+            return self._is_key_held

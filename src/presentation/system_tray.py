@@ -178,7 +178,6 @@ class SystemTrayIcon(QSystemTrayIcon):
 
         # Create reference to windows (don't initialize them yet)
         self.settings_window = None
-        self.download_manager_window = None
         
         # Reference to service manager (set later)
         self.service_manager = None
@@ -615,29 +614,6 @@ class SystemTrayIcon(QSystemTrayIcon):
         except Exception as e:
             logger.warning(f"Error disconnecting settings signals: {e}")
 
-    def show_downloads(self):
-        """Show the downloads window"""
-        # Show a notification that downloads are disabled
-        self.show_notification(
-            "Downloads Disabled",
-            "LLM features have been disabled in this version.",
-            QSystemTrayIcon.MessageIcon.Information,
-            3000
-        )
-        # Uncomment the following code block to enable download manager when needed
-        '''
-        if self.download_manager_window is None or not self.download_manager_window.isVisible():
-            self.download_manager_window = DownloadManagerWindow()
-            
-            # Connect to download manager
-            if self.service_manager and self.service_manager.download_manager:
-                self.service_manager.download_manager.register_progress_callback(self.download_manager_window)
-        
-        self.download_manager_window.show()
-        self.download_manager_window.raise_()
-        self.download_manager_window.activateWindow()
-        '''
-
     def quit_application(self):
         """Quit the application"""
         QApplication.quit()
@@ -857,12 +833,6 @@ class SystemTrayIcon(QSystemTrayIcon):
         
         self.animation_frame += 1
 
-    # Add the backward compatibility method
-    def _animate_recording_icon(self):
-        """Animate the recording icon by cycling through frames"""
-        # This method is kept for backward compatibility but delegates to the new method
-        self._animate_icon()
-
     def _create_processing_icon(self) -> QIcon:
         """Create a processing icon with light red dot in top right corner using the original logo"""
         sizes = [16, 24, 32, 48, 64, 128]
@@ -1029,13 +999,11 @@ class SystemTrayIcon(QSystemTrayIcon):
     def _on_settings_saved(self):
         """Handle settings saved event"""
         if self.service_manager:
-            # Let service manager reload settings
+            # Reload settings in service manager (handles LLM, audio, hotkey updates internally)
             self.service_manager.reload_settings()
-            
-            # Explicitly re-register hotkeys after settings are reloaded
-            if hasattr(self.service_manager.recording_service, '_register_hotkeys'):
-                logger.info("Re-registering hotkeys after settings saved")
-                self.service_manager.recording_service._register_hotkeys()
+
+            # Update tray's own notification/auto_paste preferences
+            self.update_settings(self.service_manager.settings)
 
     def show(self):
         """Override show method to handle D-Bus errors on Linux"""

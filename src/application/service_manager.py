@@ -15,8 +15,6 @@ from ..infrastructure.persistence.settings_repository import SettingsRepository
 from ..infrastructure.audio.recorder import AudioRecorder
 from ..infrastructure.transcription.transcriber import Transcriber
 from ..infrastructure.llm.processor import TextProcessor
-from ..infrastructure.llm.embedded_processor import EmbeddedTextProcessor
-from ..infrastructure.llm.download_manager import DownloadManager
 from ..infrastructure.recording.recording_service import RecordingService
 
 
@@ -59,8 +57,6 @@ class ServiceManager(QObject):
         self._audio_recorder = None
         self._transcriber = None
         self._text_processor = None
-        self._embedded_processor = None
-        self._download_manager = None
         
         # Initialize everything
         self._initialize_core_dependencies()
@@ -230,9 +226,6 @@ class ServiceManager(QObject):
         """Initialize infrastructure components."""
         logger.debug("Initializing infrastructure components")
         
-        # Initialize download manager first
-        self._download_manager = DownloadManager()
-        
         with self._service_lock:
             # Initialize audio recorder
             try:
@@ -262,30 +255,6 @@ class ServiceManager(QObject):
         if hasattr(self._settings, 'llm') and self._settings.llm:
             logger.info(f"LLM settings: enabled={self._settings.llm.enabled}")
     
-    def _initialize_llm_processors(self):
-        """Initialize LLM processors based on settings."""
-        logger.debug("Initializing LLM processors")
-        
-        # Safety check
-        if not self._settings.llm:
-            logger.warning("LLM settings not initialized, skipping LLM processor initialization")
-            return
-        
-        # Initialize external API processor if not using embedded model
-        if not self._settings.llm.use_embedded_model:
-            self._text_processor = TextProcessor(
-                api_url=self._settings.llm.api_url
-            )
-        else:
-            # Initialize embedded processor if available and enabled
-            try:
-                self._embedded_processor = EmbeddedTextProcessor(
-                    model_name=self._settings.llm.embedded_model_name,
-                    progress_callback=self._download_manager.get_progress_callback()
-                )
-            except Exception as e:
-                logger.error(f"Failed to initialize embedded LLM processor: {e}")
-    
     def _initialize_services(self):
         """Initialize application services."""
         logger.debug("Initializing services")
@@ -311,43 +280,9 @@ class ServiceManager(QObject):
                    f"record_key={self._settings.hotkeys.record_key.toString()}")
         
         # Update services with new settings
+        # Note: update_settings() handles LLM, audio, and hotkey updates internally
         if self._recording_service:
-            # Check if update_settings method exists
-            if hasattr(self._recording_service, 'update_settings'):
-                self._recording_service.update_settings(self._settings)
-            else:
-                # If update_settings doesn't exist, assign the new settings directly
-                self._recording_service.settings = self._settings
-        
-        # Reinitialize LLM processors if needed
-        if self._settings.llm and self._settings.llm.enabled:
-            llm_settings_changed = (
-                not hasattr(self, '_previous_llm_settings') or
-                self._settings.llm.model != getattr(self, '_previous_llm_settings', {}).get('model') or
-                self._settings.llm.api_url != getattr(self, '_previous_llm_settings', {}).get('api_url') or
-                self._settings.llm.use_embedded_model != getattr(self, '_previous_llm_settings', {}).get('use_embedded_model') or
-                self._settings.llm.embedded_model_name != getattr(self, '_previous_llm_settings', {}).get('embedded_model_name')
-            )
-            
-            if llm_settings_changed:
-                # Clear existing processors
-                self._text_processor = None
-                self._embedded_processor = None
-                
-                # Reinitialize
-                self._initialize_llm_processors()
-                
-                # Let the recording service re-initialize its LLM processors
-                if hasattr(self._recording_service, '_initialize_llm_processor'):
-                    self._recording_service._initialize_llm_processor()
-            
-            # Store current LLM settings for future comparisons
-            self._previous_llm_settings = {
-                'model': self._settings.llm.model,
-                'api_url': self._settings.llm.api_url,
-                'use_embedded_model': self._settings.llm.use_embedded_model,
-                'embedded_model_name': self._settings.llm.embedded_model_name
-            }
+            self._recording_service.update_settings(self._settings)
     
     def save_settings(self):
         """Save current settings to storage."""
@@ -368,17 +303,7 @@ class ServiceManager(QObject):
     def text_processor(self) -> Optional[TextProcessor]:
         """Get the LLM text processor if available."""
         return self._text_processor
-    
-    @property
-    def embedded_processor(self) -> Optional[EmbeddedTextProcessor]:
-        """Get the embedded LLM processor if available."""
-        return self._embedded_processor
-    
-    @property
-    def download_manager(self) -> Optional[DownloadManager]:
-        """Get the download manager"""
-        return self._download_manager
-    
+
     def shutdown(self):
         """Perform clean shutdown of all services.
         
@@ -426,7 +351,6 @@ class ServiceManager(QObject):
         
         # STEP 4: Clean up any resources held by processors
         self._text_processor = None
-        self._embedded_processor = None
         
         # Save settings on shutdown
         try:

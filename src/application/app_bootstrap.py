@@ -5,7 +5,6 @@ AppBootstrap handles application initialization and lifecycle.
 import logging
 import sys
 from pathlib import Path
-import traceback
 import platform
 import os
 
@@ -14,8 +13,6 @@ from PySide6.QtGui import QIcon
 
 from .service_manager import ServiceManager
 from ..presentation.system_tray import SystemTrayIcon
-from ..presentation.windows.settings import SettingsDialog, SettingsWindow
-from ..presentation.windows.download_manager import DownloadManagerWindow
 from ..presentation.theme import AppTheme
 
 
@@ -38,8 +35,6 @@ class AppBootstrap:
     def __init__(self):
         """Initialize the application bootstrap."""
         self.service_manager = None
-        self.settings_window = None
-        self.download_manager_window = None
         
         # Set up Linux-specific configuration before creating QApplication
         if platform.system() == 'Linux':
@@ -104,9 +99,6 @@ class AppBootstrap:
             logger.info("Application will continue with limited UI functionality")
             # Continue without the tray icon - hotkeys will still work
         
-        # Initialize settings window container
-        self.settings_window = None
-        self.download_manager_window = None
         
         try:
             # Initialize service manager
@@ -190,113 +182,6 @@ class AppBootstrap:
         else:
             logger.warning("No hotkey handler available in recording service")
     
-    def _show_settings(self):
-        """Show the settings dialog."""
-        logger.debug("Showing settings dialog")
-        
-        if not self.service_manager:
-            self._show_error("Cannot open settings: Service manager is not initialized.")
-            return
-            
-        # Disable hotkeys while settings dialog is open
-        if hasattr(self.service_manager.recording_service, 'hotkey_handler') and \
-           hasattr(self.service_manager.recording_service.hotkey_handler, 'set_hotkeys_enabled'):
-            self.service_manager.recording_service.hotkey_handler.set_hotkeys_enabled(False)
-        
-       # Create a new window if it doesn't exist or was closed
-        if self.settings_window is None or not self.settings_window.isVisible():
-            # MEMORY LEAK FIX: Disconnect old signals before creating new window
-            if self.settings_window is not None:
-                self._disconnect_settings_window_signals()
-            
-            self.settings_window = SettingsWindow(
-                settings=self.service_manager.settings,
-                settings_repository=self.service_manager.recording_service.settings_repository
-            )
-            
-            # Connect settings saved signal
-            self.settings_window.settings_saved.connect(self._on_settings_saved)
-        
-        # Show the settings window
-        self.settings_window.show()
-        self.settings_window.raise_()
-        self.settings_window.activateWindow()
-    
-    def _disconnect_settings_window_signals(self):
-        """Safely disconnect all signals from the settings window to prevent memory leaks."""
-        if self.settings_window is None:
-            return
-        
-        try:
-            try:
-                self.settings_window.settings_saved.disconnect(self._on_settings_saved)
-                logger.debug("Disconnected settings_saved signal from AppBootstrap")
-            except (TypeError, RuntimeError):
-                # Signal was not connected or already disconnected
-                pass
-        except Exception as e:
-            logger.warning(f"Error disconnecting settings window signals: {e}")
-    
-    def show_downloads(self):
-        """Show the downloads window."""
-        logger.debug("Downloads functionality is disabled")
-        
-        # Show a notification that downloads are disabled
-        self.tray.show_notification(
-            "Downloads Disabled",
-            "LLM features have been disabled in this version.",
-            QSystemTrayIcon.MessageIcon.Information,
-            3000
-        )
-        
-        # Uncomment the following code block to enable download manager when needed
-        '''
-        # Create a new window if it doesn't exist or was closed
-        if self.download_manager_window is None or not self.download_manager_window.isVisible():
-            self.download_manager_window = DownloadManagerWindow()
-            
-            # Connect to the download manager
-            if self.service_manager and self.service_manager.download_manager:
-                logger.info("Connecting download manager window to download manager")
-                self.service_manager.download_manager.register_progress_callback(self.download_manager_window)
-                
-                # Populate with any existing downloads
-                downloads = self.service_manager.download_manager.get_downloads()
-                if downloads:
-                    logger.info(f"Found {len(downloads)} existing downloads to display")
-                    for model_name, download_info in downloads.items():
-                        self.download_manager_window.update_download_progress(
-                            model_name,
-                            download_info.get("message", "Download in progress"),
-                            download_info.get("progress", 0.0)
-                        )
-        
-        # Show and activate the window
-        self.download_manager_window.show()
-        self.download_manager_window.raise_()
-        self.download_manager_window.activateWindow()
-        '''
-    
-    def _on_settings_saved(self, settings):
-        """Handle settings saved event."""
-        logger.debug("Settings saved, updating components")
-        
-        # Update service manager with new settings
-        self.service_manager.update_settings(settings)
-        
-        # Update tray with new settings
-        self.tray.update_settings(self.service_manager.settings)
-    
-    
-    def _on_settings_canceled(self):
-        """Handle settings canceled event."""
-        logger.debug("Settings canceled")
-        
-        # Re-enable hotkeys
-        if hasattr(self.service_manager.recording_service, 'hotkey_handler') and \
-           hasattr(self.service_manager.recording_service.hotkey_handler, 'set_hotkeys_enabled'):
-            self.service_manager.recording_service.hotkey_handler.set_hotkeys_enabled(True)
-    
     def _on_exit_hotkey(self):
         """Handle exit hotkey press event."""
         logger.info("Exit hotkey pressed, shutting down application")
@@ -336,10 +221,6 @@ class AppBootstrap:
         if hasattr(self, 'tray') and self.tray:
             if hasattr(self.tray, 'toast') and self.tray.toast:
                 self.tray.toast.cleanup()
-        
-        # Disconnect settings window signals
-        if hasattr(self, 'settings_window') and self.settings_window:
-            self._disconnect_settings_window_signals()
         
         # Shutdown service manager
         if hasattr(self, 'service_manager'):

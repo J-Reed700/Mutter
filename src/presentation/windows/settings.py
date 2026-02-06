@@ -2,13 +2,13 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QPushButton, QLabel, QComboBox, QTabWidget,
     QGroupBox, QFormLayout, QSpinBox, QCheckBox,
-    QKeySequenceEdit, QDialog, QSlider, QFrame,
+    QKeySequenceEdit, QFrame,
     QApplication, QStyle, QSizePolicy, QMessageBox,
-    QButtonGroup, QRadioButton, QScrollArea, QProgressBar,
+    QScrollArea,
     QTextEdit, QLineEdit
 )
 from PySide6.QtCore import Qt, Slot, Signal, QTimer, QEvent
-from PySide6.QtGui import QKeySequence, QFont, QIcon, QPixmap
+from PySide6.QtGui import QKeySequence, QFont, QIcon
 import sounddevice as sd
 import logging
 from pathlib import Path
@@ -43,7 +43,7 @@ class SettingsWindow(QMainWindow):
                    f"quit_key={self.settings.hotkeys.quit_key.toString() if self.settings.hotkeys.quit_key else 'None'}, "
                    f"record_key={self.settings.hotkeys.record_key.toString()}")
         
-        self.setWindowTitle("Memo Settings")
+        self.setWindowTitle("Mutter Settings")
         self.setMinimumSize(600, 500)
         
         # Set window icon if available
@@ -70,7 +70,7 @@ class SettingsWindow(QMainWindow):
         
         # Header with title and version
         header_layout = QHBoxLayout()
-        title_label = QLabel("Memo Settings")
+        title_label = QLabel("Mutter Settings")
         title_font = QFont()
         title_font.setPointSize(16)
         title_font.setBold(True)
@@ -146,6 +146,7 @@ class SettingsWindow(QMainWindow):
         self.record_hotkey_edit = QKeySequenceEdit(
             self.settings.hotkeys.record_key
         )
+        self.record_hotkey_edit.setMaximumSequenceLength(1)
         self.record_hotkey_edit.setMinimumWidth(200)
         self.record_hotkey_edit.editingFinished.connect(self._mark_settings_changed)
         record_layout.addRow("Record Key:", self.record_hotkey_edit)
@@ -166,6 +167,7 @@ class SettingsWindow(QMainWindow):
         self.quit_hotkey_edit = QKeySequenceEdit(
             self.settings.hotkeys.quit_key or QKeySequence()
         )
+        self.quit_hotkey_edit.setMaximumSequenceLength(1)
         self.quit_hotkey_edit.setMinimumWidth(200)
         self.quit_hotkey_edit.editingFinished.connect(self._mark_settings_changed)
         quit_layout.addRow("Quit Key:", self.quit_hotkey_edit)
@@ -380,70 +382,6 @@ class SettingsWindow(QMainWindow):
         
         layout.addWidget(enable_group)
         
-        # Mode selection (radio buttons)
-        self.mode_group = QGroupBox("LLM Mode")
-        mode_layout = QVBoxLayout(self.mode_group)
-        mode_layout.setContentsMargins(15, 20, 15, 15)
-        mode_layout.setSpacing(10)
-        
-        self.llm_mode_button_group = QButtonGroup(self)
-        self.embedded_radio = QRadioButton("Use built-in LLM (coming soon)")
-        self.external_radio = QRadioButton("Use external LLM server (Ollama, LM Studio, etc.)")
-        
-        # Set the initial state based on settings
-        if hasattr(self.settings.llm, 'use_embedded_model') and self.settings.llm.use_embedded_model:
-            self.embedded_radio.setChecked(True)
-        else:
-            self.external_radio.setChecked(True)
-        
-        self.llm_mode_button_group.addButton(self.embedded_radio)
-        self.llm_mode_button_group.addButton(self.external_radio)
-        
-        mode_layout.addWidget(self.embedded_radio)
-        mode_layout.addWidget(self.external_radio)
-        
-        layout.addWidget(self.mode_group)
-        
-        # ---------- Embedded Model Settings ----------
-        self.embedded_group = QGroupBox("Built-in Model Settings")
-        embedded_layout = QFormLayout(self.embedded_group)
-        embedded_layout.setContentsMargins(15, 20, 15, 15)
-        embedded_layout.setSpacing(10)
-        
-        self.embedded_model_combo = QComboBox()
-        self.embedded_model_combo.addItems([
-            "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
-            "microsoft/Phi-3-mini-4k-instruct-gguf",
-            "TheBloke/Llama-2-7B-Chat-GGUF",
-        ])
-        self.embedded_model_combo.setMinimumWidth(300)
-        self.embedded_model_combo.setMinimumHeight(30)
-        
-        # Set current embedded model
-        if hasattr(self.settings.llm, 'embedded_model_name') and self.settings.llm.embedded_model_name:
-            index = self.embedded_model_combo.findText(self.settings.llm.embedded_model_name)
-            if index >= 0:
-                self.embedded_model_combo.setCurrentIndex(index)
-            else:
-                self.embedded_model_combo.addItem(self.settings.llm.embedded_model_name)
-                self.embedded_model_combo.setCurrentIndex(self.embedded_model_combo.count() - 1)
-        
-        self.embedded_model_combo.currentIndexChanged.connect(self._mark_settings_changed)
-        embedded_layout.addRow("Model:", self.embedded_model_combo)
-        
-        # Placeholder download button
-        self.download_model_button = QPushButton("Download Model (Coming Soon)")
-        self.download_model_button.setEnabled(False)
-        self.download_model_button.setToolTip("Embedded model support is not yet implemented")
-        embedded_layout.addRow("", self.download_model_button)
-        
-        embedded_note = QLabel("Note: Built-in model support is coming soon. Use an external server for now.")
-        embedded_note.setStyleSheet("color: #666666; font-size: 12px; font-style: italic;")
-        embedded_note.setWordWrap(True)
-        embedded_layout.addRow("", embedded_note)
-        
-        layout.addWidget(self.embedded_group)
-        
         # ---------- External Server Settings ----------
         self.external_group = QGroupBox("External LLM Server")
         external_layout = QFormLayout(self.external_group)
@@ -557,15 +495,6 @@ class SettingsWindow(QMainWindow):
         
         layout.addWidget(prompt_group)
         
-        # Connect signals to enable/disable sections based on mode
-        self.embedded_radio.toggled.connect(lambda checked: self.embedded_group.setEnabled(checked))
-        self.embedded_radio.toggled.connect(lambda checked: self.external_group.setEnabled(not checked))
-        self.embedded_radio.toggled.connect(self._mark_settings_changed)
-        
-        # Set initial enabled states
-        self.embedded_group.setEnabled(self.embedded_radio.isChecked())
-        self.external_group.setEnabled(self.external_radio.isChecked())
-        
         # Disable all settings if LLM is not enabled
         self._update_llm_settings_enabled(self.settings.llm.enabled)
         
@@ -585,9 +514,7 @@ class SettingsWindow(QMainWindow):
     
     def _update_llm_settings_enabled(self, enabled: bool):
         """Enable or disable LLM settings based on the main checkbox"""
-        self.mode_group.setEnabled(enabled)
-        self.embedded_group.setEnabled(enabled and self.embedded_radio.isChecked())
-        self.external_group.setEnabled(enabled and self.external_radio.isChecked())
+        self.external_group.setEnabled(enabled)
         # Find prompt group and enable/disable it
         for child in self.findChildren(QGroupBox):
             if child.title() == "System Prompt":
@@ -599,31 +526,6 @@ class SettingsWindow(QMainWindow):
         if not hasattr(self.settings, 'llm') or self.settings.llm is None:
             from ...domain.settings import LLMSettings
             self.settings.llm = LLMSettings()
-            
-        # Set default values if not present
-        if not hasattr(self.settings.llm, 'enabled'):
-            self.settings.llm.enabled = False
-            
-        if not hasattr(self.settings.llm, 'use_embedded_model'):
-            self.settings.llm.use_embedded_model = False  # Default to external (Ollama)
-            
-        if not hasattr(self.settings.llm, 'embedded_model_name'):
-            self.settings.llm.embedded_model_name = "Qwen/Qwen2.5-1.5B-Instruct-GGUF"
-            
-        if not hasattr(self.settings.llm, 'api_url'):
-            self.settings.llm.api_url = "http://localhost:11434/v1"
-            
-        if not hasattr(self.settings.llm, 'model'):
-            self.settings.llm.model = "llama3.2"
-            
-        if not hasattr(self.settings.llm, 'custom_prompt'):
-            self.settings.llm.custom_prompt = "Fix any grammar, spelling, and punctuation errors in the following text. Keep the meaning exactly the same. Only output the corrected text, nothing else:\n\n{text}"
-            
-        if not hasattr(self.settings.llm, 'api_username'):
-            self.settings.llm.api_username = ""
-            
-        if not hasattr(self.settings.llm, 'api_password'):
-            self.settings.llm.api_password = ""
     
     def _create_appearance_tab(self) -> QWidget:
         """Create the appearance settings tab"""
@@ -935,31 +837,23 @@ class SettingsWindow(QMainWindow):
                 self.settings.llm = LLMSettings()
             
             self.settings.llm.enabled = self.llm_enabled_check.isChecked()
-            
-            # Check whether we're using embedded model or external API
-            if hasattr(self, 'embedded_radio'):
-                self.settings.llm.use_embedded_model = self.embedded_radio.isChecked()
-                
-                # Save embedded model name
-                if hasattr(self, 'embedded_model_combo'):
-                    self.settings.llm.embedded_model_name = self.embedded_model_combo.currentText()
-                
-                # Save external API settings
-                if hasattr(self, 'llm_api_url_edit'):
-                    self.settings.llm.api_url = self.llm_api_url_edit.text().strip()
-                    if not self.settings.llm.api_url:
-                        self.settings.llm.api_url = "http://localhost:11434/v1"
-                
-                if hasattr(self, 'llm_model_combo'):
-                    self.settings.llm.model = self.llm_model_combo.currentText().strip()
-                    if not self.settings.llm.model:
-                        self.settings.llm.model = "llama3.2"
-                
-                # Save authentication credentials
-                if hasattr(self, 'llm_username_edit'):
-                    self.settings.llm.api_username = self.llm_username_edit.text().strip()
-                if hasattr(self, 'llm_password_edit'):
-                    self.settings.llm.api_password = self.llm_password_edit.text()
+
+            # Save external API settings
+            if hasattr(self, 'llm_api_url_edit'):
+                self.settings.llm.api_url = self.llm_api_url_edit.text().strip()
+                if not self.settings.llm.api_url:
+                    self.settings.llm.api_url = "http://localhost:11434/v1"
+
+            if hasattr(self, 'llm_model_combo'):
+                self.settings.llm.model = self.llm_model_combo.currentText().strip()
+                if not self.settings.llm.model:
+                    self.settings.llm.model = "llama3.2"
+
+            # Save authentication credentials
+            if hasattr(self, 'llm_username_edit'):
+                self.settings.llm.api_username = self.llm_username_edit.text().strip()
+            if hasattr(self, 'llm_password_edit'):
+                self.settings.llm.api_password = self.llm_password_edit.text()
             
             # Save custom prompt
             if hasattr(self, 'custom_prompt_edit'):
@@ -1315,111 +1209,6 @@ class SettingsWindow(QMainWindow):
             # Log but don't crash if there's an issue resizing
             logger.debug(f"Failed to resize combo popup: {e}")
 
-    def update_model_download_progress(self, message: str, progress: float):
-        """Update the model download progress display
-        
-        Args:
-            message: Status message to display
-            progress: Progress percentage (0-100) or negative for error
-        """
-        # Ensure the download group is visible
-        self.download_group.setVisible(True)
-        
-        # Update the status message
-        self.download_status_label.setText(message)
-        
-        # Update the progress bar
-        if progress < 0:
-            # Negative value indicates error
-            self.download_progress.setStyleSheet("QProgressBar { color: white; background-color: #ffaaaa; } QProgressBar::chunk { background-color: #ff6666; }")
-            self.download_progress.setFormat("Error")
-            self.download_progress.setValue(0)
-        elif progress >= 100:
-            # Complete
-            self.download_progress.setStyleSheet("QProgressBar { color: white; background-color: #aaffaa; } QProgressBar::chunk { background-color: #66ff66; }")
-            self.download_progress.setFormat("Complete")
-            self.download_progress.setValue(100)
-            
-            # Hide the group after a delay
-            QTimer.singleShot(3000, lambda: self.download_group.setVisible(False))
-        else:
-            # In progress
-            self.download_progress.setStyleSheet("")
-            self.download_progress.setFormat("%p%")
-            self.download_progress.setValue(int(progress))
-        
-        # Process events to ensure UI updates
-        QApplication.processEvents()
-
-    def _download_selected_model(self):
-        """Pre-download the selected embedded model"""
-        from ...infrastructure.llm.embedded_processor import EmbeddedTextProcessor
-        
-        model_name = self.embedded_model_combo.currentText()
-        
-        # Show the download status UI
-        self.download_group.setVisible(True)
-        self.download_status_label.setText(f"Initializing download for model: {model_name}")
-        self.download_progress.setValue(0)
-        QApplication.processEvents()
-        
-        try:
-            # Create an embedded processor instance just for downloading
-            # We can't reuse existing ones from ServiceManager because we want immediate update
-            processor = EmbeddedTextProcessor(
-                model_name=model_name,
-                progress_callback=self.update_model_download_progress
-            )
-            
-            # Show a message that download has started
-            QMessageBox.information(
-                self,
-                "Download Started",
-                f"Download of model {model_name} has been started. Progress will be shown in the settings window.",
-                QMessageBox.Ok
-            )
-        except Exception as e:
-            # Show error message
-            QMessageBox.critical(
-                self,
-                "Download Error",
-                f"Failed to start model download: {str(e)}",
-                QMessageBox.Ok
-            )
-            # Update progress display to show error
-            self.update_model_download_progress(f"Error starting download: {str(e)}", -1)
-
-    def _on_hotkey_capture(self, event):
-        """Capture the hotkey press"""
-        # Only process key press events (not releases)
-        if event.type() != QEvent.KeyPress:
-            return True
-        
-        # Get the key sequence
-        key = event.key()
-        modifiers = event.modifiers()
-        
-        # Create a key sequence
-        seq = QKeySequence(int(modifiers) + key)
-        
-        # Log the captured key sequence for debugging
-        logger.debug(f"Captured key sequence: {seq.toString()}")
-        
-        # Check if we're in Mac and translate Meta to a more clear name
-        import platform
-        if platform.system() == "Darwin" and "Meta" in seq.toString():
-            # Replace "Meta" with "Command" for display purposes
-            display_text = seq.toString().replace("Meta", "Command")
-            self.hotkey_capture.setText(display_text)
-            # Record the actual QKeySequence for later use
-            self.captured_hotkey = seq
-        else:
-            # Just use the key sequence as is
-            self.hotkey_capture.setText(seq.toString())
-            self.captured_hotkey = seq
-        
-        return True
-
     @staticmethod
     def get_macos_friendly_key_display(key_sequence: QKeySequence) -> str:
         """
@@ -1470,167 +1259,4 @@ class SettingsWindow(QMainWindow):
                 key_seq = self.quit_hotkey_edit.keySequence()
                 friendly_display = self.get_macos_friendly_key_display(key_seq)
                 if hasattr(self, 'quit_hotkey_display') and friendly_display:
-                    self.quit_hotkey_display.setText(f"Current: {friendly_display}")
-                    
-
-class SettingsDialog(QDialog):
-    hotkey_changed = Signal(object)  # Emits QKeySequence
-
-    def __init__(self, parent=None, settings=None, recording_service=None):
-        super().__init__(parent)
-        self.settings = settings
-        self.recording_service = recording_service
-        self.setWindowTitle("Memo Settings")
-        self.setMinimumWidth(400)
-        
-        # Set window icon if available
-        icon_path = Path(__file__).parent.parent.parent.parent / "resources" / "images" / "microphone.png"
-        if icon_path.exists():
-            self.setWindowIcon(QIcon(str(icon_path)))
-            
-        self.setup_ui()
-
-    def setup_ui(self):
-        layout = QVBoxLayout()
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(15)
-        
-        # Add title label
-        title_label = QLabel("Recording Hotkey Settings")
-        title_font = QFont()
-        title_font.setPointSize(14)
-        title_font.setBold(True)
-        title_label.setFont(title_font)
-        layout.addWidget(title_label)
-        
-        # Add description
-        desc_label = QLabel(
-            "Configure the hotkey used for recording. Press the key combination you want to use."
-        )
-        desc_label.setWordWrap(True)
-        layout.addWidget(desc_label)
-        
-        # Add a separator
-        separator = QFrame()
-        separator.setFrameShape(QFrame.HLine)
-        separator.setFrameShadow(QFrame.Sunken)
-        layout.addWidget(separator)
-        
-        # Hotkey section
-        hotkey_layout = QFormLayout()
-        hotkey_layout.setContentsMargins(0, 10, 0, 10)
-        hotkey_layout.setSpacing(10)
-        
-        hotkey_label = QLabel("Recording Hotkey:")
-        self.hotkey_edit = QKeySequenceEdit()
-        self.hotkey_edit.setMinimumWidth(200)
-        
-        # Set the current hotkey from settings
-        if self.settings and hasattr(self.settings, 'hotkeys') and self.settings.hotkeys.record_key:
-            self.hotkey_edit.setKeySequence(self.settings.hotkeys.record_key)
-            
-        hotkey_layout.addRow(hotkey_label, self.hotkey_edit)
-        
-        # Add a section for quit hotkey
-        quit_hotkey_label = QLabel("Quit Hotkey:")
-        self.quit_hotkey_edit = QKeySequenceEdit()
-        self.quit_hotkey_edit.setMinimumWidth(200)
-        
-        # Set the current quit hotkey from settings
-        if self.settings and hasattr(self.settings, 'hotkeys') and self.settings.hotkeys.quit_key:
-            self.quit_hotkey_edit.setKeySequence(self.settings.hotkeys.quit_key)
-            
-        hotkey_layout.addRow(quit_hotkey_label, self.quit_hotkey_edit)
-        
-        # Add a note
-        note = QLabel(
-            "Note: Hotkeys work globally across all applications. "
-            "On macOS, Command (⌘) is typically used instead of Control (⌃) for keyboard shortcuts."
-        )
-        note.setStyleSheet(f"color: {AppTheme.TEXT_SECONDARY}; font-size: {AppTheme.FONT_SIZE_SMALL}pt;")
-        note.setWordWrap(True)
-        hotkey_layout.addRow("", note)
-        
-        layout.addLayout(hotkey_layout)
-        
-        # Add spacer
-        layout.addStretch()
-        
-        # Buttons
-        button_layout = QHBoxLayout()
-        
-        # Add quit button on the left
-        quit_button = QPushButton("Quit Application")
-        quit_button.setStyleSheet(f"background-color: {AppTheme.ACCENT}; color: white;")
-        quit_button.clicked.connect(self._quit_application)
-        button_layout.addWidget(quit_button)
-        
-        # Add spacer to push OK/Cancel buttons to the right
-        button_layout.addStretch()
-        
-        cancel_button = QPushButton("Cancel")
-        cancel_button.setStyleSheet("background-color: #e0e0e0; color: #333333;")
-        
-        ok_button = QPushButton("OK")
-        
-        cancel_button.clicked.connect(self.reject)
-        ok_button.clicked.connect(self.accept)
-        
-        button_layout.addWidget(cancel_button)
-        button_layout.addWidget(ok_button)
-        
-        layout.addLayout(button_layout)
-        
-        self.setLayout(layout)
-
-    def _quit_application(self):
-        """Quit the application with confirmation"""
-        confirm = QMessageBox.question(
-            self,
-            "Quit Application",
-            "Are you sure you want to quit the application?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
-        
-        if confirm == QMessageBox.Yes:
-            QApplication.quit()
-    
-    def accept(self):
-        """Override accept to save the hotkey settings when OK is clicked"""
-        if self.settings and hasattr(self.settings, 'hotkeys'):
-            # Save record hotkey
-            new_record_sequence = self.hotkey_edit.keySequence()
-            if new_record_sequence != self.settings.hotkeys.record_key:
-                self.settings.hotkeys.record_key = new_record_sequence
-                if self.recording_service:
-                    self.recording_service.set_hotkey(new_record_sequence)
-                    
-            # Save quit hotkey
-            new_quit_sequence = self.quit_hotkey_edit.keySequence()
-            if new_quit_sequence != self.settings.hotkeys.quit_key:
-                self.settings.hotkeys.quit_key = new_quit_sequence
-                if self.recording_service:
-                    self.recording_service.set_quit_hotkey(new_quit_sequence)
-                    
-            # Emit the signal for compatibility
-            self.hotkey_changed.emit(new_record_sequence)
-            logger.debug(f"Hotkeys saved: Record={new_record_sequence.toString()}, Quit={new_quit_sequence.toString()}")
-            
-        super().accept()
-        
-    def _on_hotkey_changed(self):
-        """Handle hotkey changes - this is kept for backwards compatibility"""
-        pass
-
-    def set_current_hotkey(self, key_sequence):
-        """Set the current hotkey in the editor"""
-        self.hotkey_edit.setKeySequence(key_sequence)
-        
-    def get_settings(self):
-        """Get the current settings
-        
-        Returns:
-            Settings: The updated settings object
-        """
-        return self.settings 
+                    self.quit_hotkey_display.setText(f"Current: {friendly_display}") 

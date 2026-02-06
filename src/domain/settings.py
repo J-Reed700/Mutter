@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional, Dict, List
+from typing import Optional
 from PySide6.QtGui import QKeySequence
 
 @dataclass
@@ -47,14 +47,9 @@ Examples:
 Text to process:
 
 {text}"""
-    use_embedded_model: bool = False  # Whether to use the embedded model instead of API
-    embedded_model_name: str = "Qwen/Qwen2.5-1.5B-Instruct-GGUF"  # Default embedded model
     # Authentication for external LLM endpoint (Basic Auth)
     api_username: str = ""  # Username for HTTP Basic Auth
     api_password: str = ""  # Password for HTTP Basic Auth
-    # Legacy fields kept for compatibility
-    default_processing_type: str = "custom"
-    custom_prompt_templates: Dict[str, str] = None
 
 @dataclass
 class AppearanceSettings:

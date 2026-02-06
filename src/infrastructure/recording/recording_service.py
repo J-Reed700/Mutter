@@ -16,11 +16,9 @@ from ...domain.value_objects.audio_metadata import AudioMetadata
 from ...domain.value_objects.transcription_metadata import TranscriptionMetadata
 from ...domain.events.recording_events import RecordingStopped, RecordingFailed
 from ...domain.events.processing_events import (
-    TranscriptionStarted, 
-    TranscriptionCompleted, 
+    TranscriptionStarted,
+    TranscriptionCompleted,
     TranscriptionFailed,
-    LLMProcessingStarted,
-    ProcessingType
 )
 
 # Infrastructure imports
@@ -28,7 +26,6 @@ from ..audio.recorder import AudioRecorder
 from ..hotkeys.base import HotkeyHandler
 from ..transcription.transcriber import Transcriber
 from ..llm.processor import TextProcessor, LLMProcessingResult
-from ..llm.embedded_processor import EmbeddedTextProcessor, TORCH_AVAILABLE, TRANSFORMERS_AVAILABLE
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +35,6 @@ class RecordingService(QObject):
     recording_failed = Signal(str)  # Emits error message
     transcription_complete = Signal(str)  # Emits the transcribed text
     llm_processing_complete = Signal(LLMProcessingResult)  # Emits the processed text result
-    stop_requested = Signal()  # New signal to indicate stop was requested before processing begins
     
     def __init__(self, settings, settings_repository, transcriber, audio_recorder):
         """Initialize the recording service.
@@ -71,7 +67,6 @@ class RecordingService(QObject):
         
         # Initialize LLM processor if enabled
         self.text_processor = None
-        self.embedded_processor = None
         if self.settings.llm and self.settings.llm.enabled:
             self._initialize_llm_processor()
         
@@ -117,30 +112,22 @@ class RecordingService(QObject):
         if not self.settings.llm or not self.settings.llm.enabled:
             logger.info("LLM processing is disabled in settings")
             self.text_processor = None
-            self.embedded_processor = None
             return
-            
-        if self.settings.llm.use_embedded_model:
-            # Embedded model support is not yet implemented
-            logger.info("Embedded LLM is not yet implemented - skipping")
-            self.embedded_processor = None
+
+        try:
+            api_url = self.settings.llm.api_url or "http://localhost:11434/v1"
+            username = getattr(self.settings.llm, 'api_username', '') or ''
+            password = getattr(self.settings.llm, 'api_password', '') or ''
+
+            logger.info(f"Initializing LLM processor at {api_url}" + (" (with auth)" if username else ""))
+            self.text_processor = TextProcessor(api_url=api_url, username=username, password=password)
+            if self.text_processor.available:
+                logger.info("LLM processor initialized successfully")
+            else:
+                logger.warning(f"LLM API not available at {api_url}")
+        except Exception as e:
+            logger.error(f"Failed to initialize LLM processor: {e}")
             self.text_processor = None
-        else:
-            # Initialize external API processor (Ollama, etc.)
-            try:
-                api_url = self.settings.llm.api_url or "http://localhost:11434/v1"
-                username = getattr(self.settings.llm, 'api_username', '') or ''
-                password = getattr(self.settings.llm, 'api_password', '') or ''
-                
-                logger.info(f"Initializing external LLM processor at {api_url}" + (" (with auth)" if username else ""))
-                self.text_processor = TextProcessor(api_url=api_url, username=username, password=password)
-                if self.text_processor.available:
-                    logger.info("External LLM processor initialized successfully")
-                else:
-                    logger.warning(f"External LLM API not available at {api_url}")
-            except Exception as e:
-                logger.error(f"Failed to initialize external LLM processor: {e}")
-                self.text_processor = None
     
     def _register_hotkeys(self):
         """Register the hotkeys from settings"""
@@ -321,19 +308,12 @@ class RecordingService(QObject):
             self.stop_recording()
     
     def _on_hotkey_released(self):
-        """Handle hotkey release event - no longer used for stopping recording"""
-        if platform.system() == 'Linux':
-            return
-        elif platform.system() == 'Windows':
-            logger.debug("Hotkey released, stopping recording")
-            self.stop_requested.emit()
-            self.stop_recording()
-        elif platform.system() == 'Darwin':
-            logger.debug("Hotkey released, stopping recording")
-            self.stop_requested.emit()
-            self.stop_recording()
-        else:
-            pass
+        """Handle hotkey release event.
+
+        Recording uses toggle-on-press behavior (_on_hotkey_pressed handles start/stop).
+        Release events are logged but do not affect recording state.
+        """
+        logger.debug("Hotkey released (no action - using toggle-on-press mode)")
     
     def _on_hotkey_state_reset(self):
         """Handle hotkey state reset signal from stale key cleanup.
@@ -726,9 +706,7 @@ class RecordingService(QObject):
         if self.settings.llm and self.settings.llm.enabled:
             self._initialize_llm_processor()
         else:
-            # Disable LLM processors if LLM is disabled
             self.text_processor = None
-            self.embedded_processor = None
         
         # Update audio recorder settings if they changed
         if (self.audio_recorder.sample_rate != self.settings.audio.sample_rate or

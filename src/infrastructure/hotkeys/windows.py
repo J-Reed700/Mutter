@@ -74,8 +74,8 @@ class WindowsHotkeyHandler(HotkeyHandler):
                     # wparam contains the hotkey ID
                     hotkey_id = wparam
                     
-                    # For WM_HOTKEY, Windows doesn't provide separate down/up events
-                    # We use a toggle pattern: first press starts recording, second press stops
+                    # For WM_HOTKEY, Windows sends one event per key chord activation.
+                    # Recording start/stop toggle is handled by RecordingService.
                     logger.debug(f"Hotkey message received: ID={hotkey_id}, lparam={hex(lparam)}")
                     
                     # Check if this is the process text hotkey
@@ -99,20 +99,12 @@ class WindowsHotkeyHandler(HotkeyHandler):
                             self.exit_hotkey_pressed.emit()
                             return True
                         
-                        # Regular toggle behavior for recording hotkeys
+                        # Windows global hotkeys fire one WM_HOTKEY message per key chord.
+                        # Recording toggle is handled by RecordingService on hotkey_pressed,
+                        # so each WM_HOTKEY should emit hotkey_pressed.
                         with self._lock:
-                            if not self._is_key_held:
-                                # First press (start recording)
-                                self._is_key_held = True
-                                logger.debug("Toggling state to RECORDING (emitting hotkey_pressed)")
-                                self.hotkey_pressed.emit()
-                            else:
-                                # Second press (stop recording)
-                                self._is_key_held = False
-                                logger.debug("Toggling state to STOPPED (emitting hotkey_released)")
-                                logger.debug("This should trigger SystemTrayIcon.on_stop_hotkey_pressed via signal connection")
-                                self.hotkey_released.emit()
-                                logger.debug("hotkey_released signal emitted")
+                            logger.debug("Hotkey activated on Windows (emitting hotkey_pressed)")
+                            self.hotkey_pressed.emit()
                     else:
                         logger.warning(f"Received hotkey ID {hotkey_id} doesn't match any registered hotkey")
                     

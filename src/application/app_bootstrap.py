@@ -229,6 +229,17 @@ class AppBootstrap:
 
 def run_application():
     """Run the application."""
+    # Ensure logging streams can handle arbitrary Unicode text on Windows.
+    # Transcription/LLM output may include characters outside cp1252.
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+            except Exception:
+                # Keep startup resilient even if a stream cannot be reconfigured.
+                pass
+
     # Set up logging
     log_dir = Path.home() / ".voicerecorder" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -236,7 +247,7 @@ def run_application():
         level=logging.DEBUG,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.FileHandler(log_dir / "voicerecorder.log"),
+            logging.FileHandler(log_dir / "voicerecorder.log", encoding="utf-8"),
             logging.StreamHandler()
         ]
     )

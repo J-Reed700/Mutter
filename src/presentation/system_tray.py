@@ -315,7 +315,10 @@ class SystemTrayIcon(QSystemTrayIcon):
         """Handle recording started signal"""
         self.status_action.setText("● Recording...")
         self.setToolTip("Mutter\nRecording in progress")
-        
+
+        # Clear stale LLM result so it doesn't get pasted if LLM fails this time
+        self.last_llm_result = ""
+
         # Set the recording state
         self.is_recording = True
         

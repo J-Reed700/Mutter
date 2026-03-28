@@ -353,15 +353,19 @@ class SystemTrayIcon(QSystemTrayIcon):
         """Handle recording stopped signal"""
         self.status_action.setText("Processing...")
         self.setToolTip("Mutter\nProcessing recording")
-        
+
         # Set recording state
         self.is_recording = False
         self.is_processing = True
-        
+
+        # Show toast notification
+        if self.show_notifications:
+            self.toast.show_toast("Recording Stopped", "Processing...", 3000, "info")
+
         # Continue the animation but now using processing frames
         if not self.animation_timer.isActive():
             self.animation_timer.start(500)
-        
+
         # Set the processing icon explicitly to ensure visual indicator changes
         self.setIcon(self.processing_icon)
 
@@ -371,30 +375,21 @@ class SystemTrayIcon(QSystemTrayIcon):
         self.status_action.setText("Ready")
         self.setToolTip("Mutter\nReady")
         
-        # Restore original icon
-        icon_path = self._find_icon(f"microphone_{16 if platform.system() == 'Windows' else 32}.png", "microphone.png")
-        if icon_path.exists():
-            self.setIcon(QIcon(str(icon_path)))
-        else:
-            self.setIcon(self._create_default_icon())
+        # Reset recording/processing state
+        self.is_recording = False
+        self.is_processing = False
         
-        # Show error notification only for critical errors, but with no sound
-        # Use a very small duration (1000ms) to be less intrusive
+        # Stop animation timer
+        self.animation_timer.stop()
+        
+        # Restore original icon
+        self.setIcon(self._default_icon)
+        
         logger.error(f"Recording failed: {error_message}")
         
-        # Only show UI notification for truly critical errors that need immediate attention
-        if "Permission denied" in error_message or "Device not found" in error_message:
-            try:
-                # Using a hack to show notification without sound - send empty option
-                self.showMessage(
-                    "Mic Error",
-                    f"Could not access microphone:\n{error_message}",
-                    QSystemTrayIcon.MessageIcon.Critical,
-                    1000  # Short duration
-                )
-            except:
-                # If that fails, just log it
-                pass
+        # Show a brief toast so the user knows what happened
+        if self.show_notifications:
+            self.toast.show_toast("Recording Failed", error_message, 3000, "error")
 
     @Slot(str)
     def on_transcription_complete(self, text: str):

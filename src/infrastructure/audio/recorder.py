@@ -358,7 +358,7 @@ class AudioRecorder:
                         logger.debug(f"Starting recording thread with device={self.device} (using actual_device={actual_device}), "
                                     f"sample_rate={self.sample_rate}, channels={self.channels}")
                         
-                        # Additional debug info for device that will be used
+                        # Validate and auto-correct sample rate for the device
                         self._log_device_info(actual_device)
                         
                         # Start the recording stream
@@ -449,10 +449,12 @@ class AudioRecorder:
                     logger.debug(f"Recording with default device: {device_info['name']}")
                     logger.debug(f"Device details: {device_info}")
                     
-                    # Validate sample rate for default device
-                    if self.sample_rate != int(device_info.get('default_samplerate', 44100)):
-                        logger.warning(f"Default device prefers sample rate {device_info.get('default_samplerate')}Hz, "
-                                     f"but configured for {self.sample_rate}Hz. This may cause issues.")
+                    # Auto-correct sample rate to match device preference
+                    preferred_rate = int(device_info.get('default_samplerate', self.sample_rate))
+                    if self.sample_rate != preferred_rate:
+                        logger.info(f"Auto-adjusting sample rate from {self.sample_rate}Hz "
+                                   f"to {preferred_rate}Hz for device '{device_info['name']}'")
+                        self.sample_rate = preferred_rate
             else:
                 device_info = sd.query_devices(actual_device)
                 logger.debug(f"Recording with device: {device_info['name']}")

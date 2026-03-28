@@ -183,6 +183,16 @@ class CustomToast(QWidget):
             painter.setPen(QColor(255, 255, 255))
             painter.drawLine(4, 8, 7, 11)
             painter.drawLine(7, 11, 12, 5)
+        elif icon_type == "error":
+            # Orange/amber circle for errors
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(230, 126, 34))  # Amber/orange
+            painter.drawEllipse(2, 2, 12, 12)
+            
+            # "!" exclamation mark
+            painter.setPen(QColor(255, 255, 255))
+            painter.drawLine(8, 4, 8, 9)
+            painter.drawLine(8, 11, 8, 12)
         elif icon_type == "info":
             # Blue circle for info
             painter.setPen(Qt.NoPen)

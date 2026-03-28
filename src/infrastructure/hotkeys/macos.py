@@ -13,6 +13,30 @@ MAX_KEY_HOLD_TIME_SECONDS = 30.0
 # Interval for cleaning up stale key states
 KEY_CLEANUP_INTERVAL_MS = 5000  # 5 seconds
 
+# macOS virtual key codes (from Carbon/HIToolbox/Events.h).
+# Maps physical key position to the base key name, unaffected by
+# modifier state. This is critical because Alt/Option causes macOS to
+# compose alternate characters (e.g. Alt+R → '®', Alt+Shift+R → '‰'),
+# making key.char unreliable for hotkey matching.
+_MACOS_VK_TO_KEY = {
+    0x00: 'a', 0x01: 's', 0x02: 'd', 0x03: 'f', 0x04: 'h',
+    0x05: 'g', 0x06: 'z', 0x07: 'x', 0x08: 'c', 0x09: 'v',
+    0x0B: 'b', 0x0C: 'q', 0x0D: 'w', 0x0E: 'e', 0x0F: 'r',
+    0x10: 'y', 0x11: 't', 0x12: '1', 0x13: '2', 0x14: '3',
+    0x15: '4', 0x16: '6', 0x17: '5', 0x18: '=', 0x19: '9',
+    0x1A: '7', 0x1B: '-', 0x1C: '8', 0x1D: '0', 0x1E: ']',
+    0x1F: 'o', 0x20: 'u', 0x21: '[', 0x22: 'i', 0x23: 'p',
+    0x25: 'l', 0x26: 'j', 0x27: "'", 0x28: 'k', 0x29: ';',
+    0x2A: '\\', 0x2B: ',', 0x2C: '/', 0x2D: 'n', 0x2E: 'm',
+    0x2F: '.', 0x32: '`',
+    0x24: 'return', 0x30: 'tab', 0x31: 'space',
+    0x33: 'backspace', 0x35: 'escape',
+    0x7B: 'left', 0x7C: 'right', 0x7D: 'down', 0x7E: 'up',
+    0x7A: 'f1', 0x78: 'f2', 0x63: 'f3', 0x76: 'f4',
+    0x60: 'f5', 0x61: 'f6', 0x62: 'f7', 0x64: 'f8',
+    0x65: 'f9', 0x6D: 'f10', 0x67: 'f11', 0x6F: 'f12',
+}
+
 
 class MacOSHotkeyHandler(HotkeyHandler):
     # Inherit signals from HotkeyHandler and add exit signal
@@ -162,6 +186,11 @@ class MacOSHotkeyHandler(HotkeyHandler):
         Normalize a key from pynput.keyboard.Key or KeyCode to a lowercase string.
         """
         if isinstance(key, keyboard.KeyCode):
+            # Prefer virtual key code over key.char because Alt/Option
+            # causes macOS to compose alternate characters (e.g. Alt+R → '®').
+            # The vk always reflects the physical key regardless of modifiers.
+            if hasattr(key, 'vk') and key.vk is not None and key.vk in _MACOS_VK_TO_KEY:
+                return _MACOS_VK_TO_KEY[key.vk]
             return key.char.lower() if key.char else ""
         else:
             # Handle special keys like cmd, shift, etc.
@@ -329,31 +358,22 @@ class MacOSHotkeyHandler(HotkeyHandler):
                     # Check if the modifier keys match exactly and the regular keys match
                     if reg_mods == active_mods and reg_keys_no_mods.issubset(active_keys):
                         if not self._active_hotkeys.get(ks, False):
-                            # Mark as active and emit the hotkey_pressed signal.
+                            # Mark as active to prevent repeat-firing while held
                             self._active_hotkeys[ks] = True
                             logger.debug(f"Hotkey pressed: {ks.toString()} (exact match)")
-
-                            # Toggle recording state
-                            if not self._is_key_held:
-                                self._is_key_held = True
-                                logger.debug("Starting recording")
-                                self.hotkey_pressed.emit()
-                            else:
-                                # If already recording, stop it
-                                self._is_key_held = False
-                                logger.debug("Stopping recording")
-                                self.hotkey_released.emit()
-                                self.stop_hotkey_pressed.emit()  # Explicit stop signal
 
                             # Special handling for exit hotkey.
                             if self.exit_hotkey and ks == self.exit_hotkey:
                                 logger.info(f"Exit hotkey detected: {ks.toString()}")
                                 self.exit_hotkey_pressed.emit()
-
                             # Special handling for process text hotkey.
-                            if self.registered_process_text_hotkey and ks == self.registered_process_text_hotkey:
+                            elif self.registered_process_text_hotkey and ks == self.registered_process_text_hotkey:
                                 logger.debug("Process text hotkey detected")
                                 self.process_text_hotkey_pressed.emit()
+                            else:
+                                # Emit hotkey_pressed — RecordingService handles
+                                # start/stop toggle via its own is_recording state.
+                                self.hotkey_pressed.emit()
         except Exception as e:
             logger.error(f"Error in _on_press handler: {e}", exc_info=True)
 

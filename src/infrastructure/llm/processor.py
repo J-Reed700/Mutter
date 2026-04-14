@@ -1,5 +1,6 @@
 from pathlib import Path
 import logging
+import re
 from typing import Optional, Dict, List, Any, Tuple
 import requests
 from requests.auth import HTTPBasicAuth

@@ -937,14 +937,18 @@ class SettingsWindow(QMainWindow):
             import requests
             from requests.auth import HTTPBasicAuth
             
+            # Use a session to maintain cookies between requests
+            # This is important for OAuth2/session-based auth proxies
+            session = requests.Session()
+            
             auth = HTTPBasicAuth(username, password) if username and password else None
             
             # Get base URL (strip /v1 if present)
             base_url = api_url[:-3] if api_url.endswith('/v1') else api_url
             
             try:
-                # First check basic connectivity
-                response = requests.get(base_url, timeout=5, auth=auth, allow_redirects=True)
+                # First check basic connectivity (this may set session cookies)
+                response = session.get(base_url, timeout=5, auth=auth, allow_redirects=True)
                 status_code = response.status_code
                 
                 if status_code in [401, 403]:
@@ -959,17 +963,50 @@ class SettingsWindow(QMainWindow):
                 # Try to get available models and populate dropdown
                 models = []
                 models_list = ""
+                models_error = ""
                 try:
-                    models_response = requests.get(f"{api_url}/models", timeout=5, auth=auth)
+                    # Use the same session to maintain cookies from initial auth
+                    models_response = session.get(
+                        f"{api_url}/models", 
+                        timeout=10, 
+                        auth=auth,
+                        allow_redirects=True
+                    )
+                    logger.debug(f"Models response status: {models_response.status_code}")
+                    logger.debug(f"Models response URL (after redirects): {models_response.url}")
+                    
                     if models_response.status_code == 200:
-                        data = models_response.json()
-                        models = [m.get("id", "unknown") for m in data.get("data", []) if m.get("id")]
-                        if models:
-                            models_list = "\n\nAvailable models:\n• " + "\n• ".join(models[:10])
-                            if len(models) > 10:
-                                models_list += f"\n... and {len(models) - 10} more"
-                except:
-                    pass  # Models endpoint might not exist, that's okay
+                        try:
+                            data = models_response.json()
+                            logger.debug(f"Models response data keys: {data.keys() if isinstance(data, dict) else type(data)}")
+                            models = [m.get("id", "unknown") for m in data.get("data", []) if m.get("id")]
+                            if models:
+                                models_list = "\n\nAvailable models:\n• " + "\n• ".join(models[:10])
+                                if len(models) > 10:
+                                    models_list += f"\n... and {len(models) - 10} more"
+                            else:
+                                models_error = f"\n\n⚠ No models found in response. Response keys: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}"
+                        except ValueError as json_err:
+                            # Response isn't JSON - might be HTML from auth redirect
+                            content_preview = models_response.text[:200] if models_response.text else "(empty)"
+                            logger.warning(f"Models response is not JSON: {content_preview}")
+                            
+                            # Check if it looks like an OAuth/auth page
+                            if "<!DOCTYPE" in content_preview or "<html" in content_preview.lower():
+                                models_error = (
+                                    "\n\n⚠ Models endpoint returned an HTML page (likely OAuth login).\n\n"
+                                    "Your server uses session-based auth. Try:\n"
+                                    "1. Login via browser first, or\n"
+                                    "2. Use a Bearer token if supported, or\n"
+                                    "3. Access Ollama directly without the proxy"
+                                )
+                            else:
+                                models_error = f"\n\n⚠ Models endpoint returned non-JSON response"
+                    else:
+                        models_error = f"\n\n⚠ Models endpoint returned status {models_response.status_code}"
+                except requests.exceptions.RequestException as e:
+                    logger.warning(f"Error fetching models: {e}")
+                    models_error = f"\n\n⚠ Could not fetch models: {str(e)[:100]}"
                 
                 # Populate the model dropdown
                 if models and hasattr(self, 'llm_model_combo'):
@@ -983,10 +1020,13 @@ class SettingsWindow(QMainWindow):
                         self.llm_model_combo.setCurrentIndex(0)
                     models_list += "\n\n✓ Model dropdown has been populated!"
                 
+                # Combine models info with any error
+                models_info = models_list if models_list else models_error
+                
                 QMessageBox.information(
                     self,
                     "Connection Successful",
-                    f"Successfully connected to LLM server!\n\nURL: {api_url}\nStatus: {status_code}{models_list}",
+                    f"Successfully connected to LLM server!\n\nURL: {api_url}\nStatus: {status_code}{models_info}",
                     QMessageBox.Ok
                 )
                     
@@ -1033,7 +1073,7 @@ class SettingsWindow(QMainWindow):
             )
             return
         
-        api_url = self.llm_api_url_edit.text().strip()
+        api_url = self.llm_api_url_edit.text().strip().rstrip('/')
         if not api_url:
             QMessageBox.warning(
                 self,
@@ -1042,6 +1082,10 @@ class SettingsWindow(QMainWindow):
                 QMessageBox.Ok
             )
             return
+        
+        # Normalize URL to ensure it ends with /v1
+        if not api_url.endswith('/v1'):
+            api_url = f"{api_url}/v1"
         
         # Get credentials
         username = self.llm_username_edit.text().strip() if hasattr(self, 'llm_username_edit') else ""
@@ -1068,22 +1112,61 @@ class SettingsWindow(QMainWindow):
         def do_warmup():
             """Run the warmup request in background thread"""
             try:
-                response = requests.post(
-                    f"{api_url}/chat/completions",
+                # Use a session to maintain cookies (important for auth proxies)
+                session = requests.Session()
+                
+                # First, hit the base URL to establish any session cookies
+                base_url = api_url[:-3] if api_url.endswith('/v1') else api_url
+                try:
+                    session.get(base_url, timeout=10, auth=auth, allow_redirects=True)
+                except:
+                    pass  # Ignore errors on initial connection
+                
+                # Try OpenAI-compatible endpoint first
+                chat_url = f"{api_url}/chat/completions"
+                logger.debug(f"Warming up model at: {chat_url}")
+                
+                response = session.post(
+                    chat_url,
                     json={
                         "model": model,
                         "messages": [{"role": "user", "content": "Hello"}],
                         "max_tokens": 5
                     },
                     timeout=120,
-                    auth=auth
+                    auth=auth,
+                    allow_redirects=True
                 )
+                
+                logger.debug(f"Warmup response status: {response.status_code}, URL: {response.url}")
                 
                 if response.status_code == 200:
                     self._warmup_result = (True, "Model warmed up successfully!")
+                elif response.status_code == 404:
+                    # Try Ollama native API as fallback
+                    ollama_url = base_url + "/api/chat"
+                    logger.debug(f"Trying Ollama native API at: {ollama_url}")
+                    
+                    response2 = session.post(
+                        ollama_url,
+                        json={
+                            "model": model,
+                            "messages": [{"role": "user", "content": "Hello"}],
+                            "stream": False
+                        },
+                        timeout=120,
+                        auth=auth,
+                        allow_redirects=True
+                    )
+                    
+                    if response2.status_code == 200:
+                        self._warmup_result = (True, "Model warmed up successfully!")
+                    else:
+                        error_msg = response2.text[:200] if response2.text else f"Status {response2.status_code}"
+                        self._warmup_result = (False, f"Both endpoints failed.\nOpenAI API: 404\nOllama API: {error_msg}")
                 else:
                     error_msg = response.text[:200] if response.text else f"Status {response.status_code}"
-                    self._warmup_result = (False, f"Error: {error_msg}")
+                    self._warmup_result = (False, f"Status {response.status_code}: {error_msg}")
             except requests.exceptions.Timeout:
                 self._warmup_result = (False, "Request timed out after 2 minutes.\nThe model may be very large or the server is slow.")
             except requests.exceptions.ConnectionError:

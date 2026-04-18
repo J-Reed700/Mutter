@@ -145,7 +145,7 @@ class TextProcessor:
                     {"role": "user", "content": prompt}
                 ],
                 "temperature": 0.7,
-                "max_tokens": 32768  # Very high limit - most modern models support 32k+
+                "max_tokens": 5000
             }
             
             response = self.session.post(

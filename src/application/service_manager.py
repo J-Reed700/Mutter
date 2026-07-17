@@ -5,7 +5,13 @@ infrastructure services and domain entities.
 
 import logging
 import platform
+import sys
 import threading
+
+try:
+    import resource  # Unix-only; unavailable on Windows
+except ImportError:
+    resource = None
 from typing import Optional, Dict, Any
 
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
@@ -74,10 +80,46 @@ class ServiceManager(QObject):
         self._health_timer = QTimer(self)
         self._health_timer.timeout.connect(self._check_health)
         self._health_timer.start(30000)  # Check every 30 seconds
-        
+
+        # Memory watchdog — logs RSS and thread/object counts every 10s so we can
+        # correlate any leak with activity that was happening in the same window.
+        self._memory_timer = QTimer(self)
+        self._memory_timer.timeout.connect(self._log_memory_snapshot)
+        self._memory_timer.start(10000)
+
         # Connect to recording service failure signal
         if self._recording_service:
             self._recording_service.recording_failed.connect(self._handle_recording_failure)
+
+    def _log_memory_snapshot(self):
+        """Log RSS, thread count, and Python object count for leak diagnostics."""
+        if resource is None:
+            return
+        try:
+            rusage = resource.getrusage(resource.RUSAGE_SELF)
+            # macOS reports ru_maxrss in bytes; Linux reports in KB.
+            if sys.platform == "darwin":
+                rss_mb = rusage.ru_maxrss / (1024 * 1024)
+            else:
+                rss_mb = rusage.ru_maxrss / 1024
+
+            import gc
+            obj_count = len(gc.get_objects())
+            thread_count = threading.active_count()
+
+            logger.warning(
+                f"[MEMWATCH] RSS={rss_mb:.1f}MB  threads={thread_count}  py_objects={obj_count}"
+            )
+
+            # If we're deep into runaway territory, dump the top object types so we
+            # can see which allocator is growing before the OS kills us.
+            if rss_mb > 2000:
+                from collections import Counter
+                type_counts = Counter(type(o).__name__ for o in gc.get_objects())
+                top = type_counts.most_common(15)
+                logger.warning(f"[MEMWATCH] top object types: {top}")
+        except Exception as e:
+            logger.debug(f"memory snapshot failed: {e}")
 
     def _check_health(self):
         """Check health of critical services in a background thread."""
@@ -127,27 +169,51 @@ class ServiceManager(QObject):
             self._recover_transcription_service()
             
     def _handle_recording_failure(self, error_message):
-        """Handle failure reported by recording service."""
+        """Handle failure reported by recording service.
+
+        Only rebuild services that are actually unhealthy — failures like an
+        empty recording are transient and must not tear down a working recorder.
+        """
         logger.warning(f"Recording service reported failure: {error_message}")
-        
-        # Analyze error to determine recovery strategy
-        error_lower = error_message.lower()
-        
-        if "audio" in error_lower or "device" in error_lower or "input" in error_lower:
-            logger.info("Failure appears to be audio-related, recovering audio service")
+
+        with self._service_lock:
+            recorder = self._audio_recorder
+            transcriber = self._transcriber
+
+        recovered = False
+        if recorder is None or not recorder.is_healthy():
+            logger.info("Audio recorder is unhealthy, recovering audio service")
             self._recover_audio_service()
-        elif "transcri" in error_lower or "model" in error_lower:
-            logger.info("Failure appears to be transcription-related, recovering transcription service")
+            recovered = True
+
+        if transcriber is None or not transcriber.is_healthy():
+            logger.info("Transcriber is unhealthy, recovering transcription service")
             self._recover_transcription_service()
-        else:
-            logger.warning("Unknown error type, attempting full infrastructure recovery")
-            self._recover_audio_service()
+            recovered = True
+
+        # A transcription failure with a loaded model still warrants a rebuild:
+        # is_healthy() only checks the model is loaded, not that it works, and
+        # transcribe() failures are exceptions rather than device problems.
+        if not recovered and "transcri" in error_message.lower():
+            logger.info("Transcription failed despite loaded model - rebuilding transcriber")
             self._recover_transcription_service()
+            recovered = True
+
+        if not recovered:
+            logger.info("Services are healthy; treating failure as transient (no recovery needed)")
 
     def _recover_audio_service(self):
         """Recover the audio recording service."""
+        # Never tear down the recorder while it's recording or still being
+        # stopped/saved — a transient device blip is handled by the recorder's
+        # own retry loop, and cleanup() here would destroy the buffered audio.
+        # Recovery re-runs on the next health check.
+        if self._recording_service and self._recording_service.is_busy():
+            logger.info("Recorder is busy - deferring audio service recovery")
+            return
+
         logger.info("Recovering audio service...")
-        
+
         # Cleanup old recorder to prevent resource leaks
         with self._service_lock:
             old_recorder = self._audio_recorder
@@ -155,10 +221,7 @@ class ServiceManager(QObject):
         if old_recorder:
             try:
                 logger.info("Shutting down unhealthy audio recorder")
-                if hasattr(old_recorder, 'shutdown'):
-                    old_recorder.shutdown()
-                elif hasattr(old_recorder, 'stop_recording'):
-                    old_recorder.stop_recording()
+                old_recorder.cleanup()
             except Exception as e:
                 logger.warning(f"Error shutting down old recorder: {e}")
 
@@ -324,15 +387,11 @@ class ServiceManager(QObject):
             except Exception as e:
                 logger.warning(f"Error disabling hotkeys during shutdown: {e}")
         
-        # STEP 2: Stop any active recording before full shutdown
-        if self._recording_service and self._recording_service.is_recording:
-            logger.info("Stopping active recording during shutdown")
-            try:
-                self._recording_service.stop_recording()
-            except Exception as e:
-                logger.warning(f"Error stopping recording during shutdown: {e}")
-        
-        # STEP 3: Shutdown recording service (which will handle hotkey handler and audio recorder)
+        # STEP 2/3: Shutdown recording service — it stops any active recording
+        # synchronously (saving the audio) and shuts down the hotkey handler.
+        # We deliberately don't call recording_service.stop_recording() here:
+        # that would kick off a background transcription the quitting app
+        # would kill mid-flight.
         if self._recording_service:
             logger.debug("Shutting down recording service")
             try:

@@ -1,6 +1,8 @@
 from typing import Optional, Callable
 from pathlib import Path
 import logging
+import threading
+import time
 from datetime import datetime
 from uuid import uuid4
 from PySide6.QtCore import QObject, Signal
@@ -35,7 +37,11 @@ class RecordingService(QObject):
     recording_failed = Signal(str)  # Emits error message
     transcription_complete = Signal(str)  # Emits the transcribed text
     llm_processing_complete = Signal(LLMProcessingResult)  # Emits the processed text result
-    
+
+    # Internal: emitted from the recorder thread when recording stopped on its
+    # own (duration/size limit, device failure); handled on the Qt main thread.
+    _recorder_auto_stopped = Signal()
+
     def __init__(self, settings, settings_repository, transcriber, audio_recorder):
         """Initialize the recording service.
         
@@ -73,19 +79,40 @@ class RecordingService(QObject):
         # State flags
         self.is_recording = False
         self.last_transcription = ""
-        
+
+        # Finalization runs in a background thread so the Qt event loop is
+        # never blocked by stream teardown, transcription, or LLM calls.
+        self._finalize_thread = None
+        # Set once the recorder itself has been stopped (audio saved); a new
+        # recording may start while transcription continues in the background.
+        self._recorder_released = threading.Event()
+        self._recorder_released.set()
+        # Whisper model is not safe for concurrent use across finalizations
+        self._transcribe_lock = threading.Lock()
+        # When the recorder auto-stops, a hotkey press already queued as a
+        # "stop" would toggle into an unwanted "start"; used to debounce that.
+        self._last_auto_stop_at = 0.0
+
+        self._recorder_auto_stopped.connect(self._handle_recorder_auto_stop)
+        if self.audio_recorder:
+            self.audio_recorder.on_auto_stop = self._on_recorder_auto_stop
+
         # Log current audio settings
         self._log_audio_settings()
-    
+
     def set_audio_recorder(self, audio_recorder):
         """Update the audio recorder instance.
-        
+
         Args:
             audio_recorder: New AudioRecorder instance
         """
         logger.info("Hot-swapping AudioRecorder")
+        if self.audio_recorder:
+            self.audio_recorder.on_auto_stop = None
         self.audio_recorder = audio_recorder
-        
+        if self.audio_recorder:
+            self.audio_recorder.on_auto_stop = self._on_recorder_auto_stop
+
     def set_transcriber(self, transcriber):
         """Update the transcriber instance.
         
@@ -303,6 +330,12 @@ class RecordingService(QObject):
     def _on_hotkey_pressed(self):
         """Handle hotkey press event"""
         if not self.is_recording:
+            # If the recorder just auto-stopped, this press was almost
+            # certainly the user's intended "stop" — don't toggle it into a
+            # fresh recording they don't know about.
+            if time.monotonic() - self._last_auto_stop_at < 1.5:
+                logger.info("Ignoring hotkey press right after auto-stop (was meant as stop)")
+                return
             self.start_recording()
         else:
             self.stop_recording()
@@ -347,22 +380,81 @@ class RecordingService(QObject):
             logger.error(f"Error deleting recording file {file_path}: {e}")
             
     def stop_recording(self):
-        """Stop current recording and transcribe the audio."""
+        """Stop current recording and transcribe the audio.
+
+        The actual work (stream teardown, WAV save, transcription, LLM) runs in
+        a background thread so the Qt event loop stays responsive — results are
+        delivered via this service's signals.
+        """
         if not self.is_recording:
             logger.debug("No recording in progress to stop")
             return None
-            
+
         logger.info("Stopping recording")
-        
+        self.is_recording = False
+
         if not self.audio_recorder:
             logger.warning("No audio recorder available to stop")
-            self.is_recording = False
             return None
-        
+
+        self._recorder_released.clear()
+        # Capture the recorder now — a health-recovery hot-swap must not make
+        # the finalizer operate on a different instance than the one recording
+        self._finalize_thread = threading.Thread(
+            target=self._finalize_and_transcribe,
+            args=(self.audio_recorder,),
+            daemon=True,
+            name="RecordingFinalizer"
+        )
+        self._finalize_thread.start()
+        return None
+
+    def is_busy(self) -> bool:
+        """True while recording OR while the recorder is still being stopped.
+
+        Covers the window between stop_recording() flipping is_recording and
+        the finalizer snapshotting the audio buffer — callers (e.g. health
+        recovery) must not tear down the recorder during either phase.
+        """
+        return self.is_recording or not self._recorder_released.is_set()
+
+    def _on_recorder_auto_stop(self):
+        """Called from the recorder's thread when it stopped on its own."""
+        self._recorder_auto_stopped.emit()
+
+    def _handle_recorder_auto_stop(self):
+        """Runs on the Qt main thread; finalize the recording that auto-stopped."""
+        if self.is_recording:
+            logger.info("Recorder stopped on its own (limit reached or device failure) - finalizing recording")
+            self._last_auto_stop_at = time.monotonic()
+            self.stop_recording()
+
+    def _finalize_and_transcribe(self, recorder):
+        """Background worker: save the audio, transcribe, and run LLM processing."""
         try:
-            recording_path = self.audio_recorder.stop_recording()
-            self.is_recording = False
-            
+            recording_path = recorder.stop_recording()
+            # Capture metadata NOW — the moment _recorder_released is set, a
+            # new session may start and overwrite the recorder's last-recording
+            # cache and settings.
+            duration_seconds = recorder.get_last_recording_duration()
+            sample_rate = recorder.sample_rate
+            channels = recorder.channels
+            device_name = str(recorder.device)
+        except Exception as e:
+            logger.error(f"Error stopping recording: {e}", exc_info=True)
+            self.recording_failed.emit(str(e))
+            recording_failed_event = RecordingFailed(
+                error_message=str(e),
+                exception=e
+            )
+            logger.debug(f"Created domain event: {recording_failed_event}")
+            return
+        finally:
+            # Recorder is idle again; a new recording may start while we
+            # transcribe this one below.
+            self._recorder_released.set()
+
+        try:
             if recording_path is None:
                 logger.warning("No audio recorded or save failed")
                 self.recording_failed.emit("No audio recorded")
@@ -376,18 +468,13 @@ class RecordingService(QObject):
             # Emit UI signal
             self.recording_stopped.emit(recording_path)
             
-            # Create and use domain entity and events
-            # Get duration and other metadata
-            duration_seconds = self.audio_recorder.get_last_recording_duration()
-            audio_info = self.audio_recorder.get_last_recording_info()
-            
-            # Create AudioMetadata value object
+            # Create AudioMetadata value object from the captured metadata
             audio_metadata = AudioMetadata(
-                sample_rate=self.audio_recorder.sample_rate,
-                channels=self.audio_recorder.channels,
+                sample_rate=sample_rate,
+                channels=channels,
                 bit_depth=16,  # Typically 16-bit for WAV
                 format="WAV",
-                device_name=str(self.audio_recorder.device),
+                device_name=device_name,
                 file_size_bytes=recording_path.stat().st_size if recording_path.exists() else 0
             )
             
@@ -421,11 +508,13 @@ class RecordingService(QObject):
             )
             logger.debug(f"Created domain event: {transcription_started_event}")
             
-            # Actual transcription
-            result = self.transcriber.transcribe(
-                recording_path,
-                language=self.settings.transcription.language
-            )
+            # Actual transcription (serialized — the Whisper model is not safe
+            # for concurrent use if two finalizations overlap)
+            with self._transcribe_lock:
+                result = self.transcriber.transcribe(
+                    recording_path,
+                    language=self.settings.transcription.language
+                )
             
             if result:
                 # Handle both TranscriptionResult object and string returns
@@ -509,29 +598,31 @@ class RecordingService(QObject):
                 # Delete the recording file even if transcription failed
                 self._delete_recording_file(recording_path)
             
-            return recording_path
-                
         except Exception as e:
-            logger.error(f"Error stopping recording: {e}", exc_info=True)
-            self.is_recording = False
+            logger.error(f"Error finalizing recording: {e}", exc_info=True)
             self.recording_failed.emit(str(e))
-            
+
             # Create and log domain event
             recording_failed_event = RecordingFailed(
                 error_message=str(e),
                 exception=e
             )
             logger.debug(f"Created domain event: {recording_failed_event}")
-            
-            return None
-    
+
     def _on_process_text_hotkey(self):
         """Handle process text hotkey press event"""
         if not self.last_transcription:
             logger.warning("No transcription available to process")
             return
-            
-        self._process_text_with_llm(self.last_transcription)
+
+        # Run in the background — LLM calls can take a minute and must not
+        # block the Qt event loop.
+        threading.Thread(
+            target=self._process_text_with_llm,
+            args=(self.last_transcription,),
+            daemon=True,
+            name="LLMProcessor"
+        ).start()
     
     def _process_text_with_llm_sync(self, text, transcription_id=None) -> Optional[LLMProcessingResult]:
         """Process text using the LLM synchronously
@@ -604,8 +695,9 @@ class RecordingService(QObject):
         calling this method, so we only need to clean up resources here.
         """
         logger.debug("Shutting down recording service")
-        
-        # Stop any ongoing recording first (defensive - service_manager should handle this)
+
+        # Stop any ongoing recording first (saves the WAV synchronously;
+        # transcription is skipped since the app is exiting)
         if self.is_recording:
             logger.info("Stopping ongoing recording during shutdown")
             try:
@@ -613,6 +705,15 @@ class RecordingService(QObject):
             except Exception as e:
                 logger.error(f"Error stopping recording during shutdown: {e}")
             self.is_recording = False
+
+        # Give an in-flight finalization time to complete. 15s covers the
+        # recorder's own 10s thread-join allowance plus the WAV save, so a
+        # quit right after stopping never loses the audio file; a
+        # still-running transcription past that point is abandoned.
+        finalize_thread = self._finalize_thread
+        if finalize_thread and finalize_thread.is_alive():
+            logger.info("Waiting for recording finalization to complete")
+            finalize_thread.join(timeout=15.0)
         
         # Clear audio recorder buffer to free memory
         if self.audio_recorder:
@@ -675,7 +776,17 @@ class RecordingService(QObject):
             
         # Log audio settings for debugging
         self._log_audio_settings()
-            
+
+        # If the previous recording is still being finalized, wait briefly for
+        # the recorder to be released (transcription may keep running in the
+        # background — only the recorder must be free). Kept short because this
+        # runs on the Qt main thread; on timeout we fail with a visible toast
+        # rather than freeze the UI.
+        if not self._recorder_released.wait(timeout=2.0):
+            logger.error("Previous recording is still stopping; cannot start a new one yet")
+            self.recording_failed.emit("Still finishing previous recording, try again in a moment")
+            return
+
         try:
             # Start the actual recording
             self.audio_recorder.start_recording()

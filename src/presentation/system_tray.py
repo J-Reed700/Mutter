@@ -377,19 +377,35 @@ class SystemTrayIcon(QSystemTrayIcon):
         
         # Reset recording/processing state
         self.is_recording = False
-        self.is_processing = False
-        
-        # Stop animation timer
-        self.animation_timer.stop()
-        
-        # Restore original icon
-        self.setIcon(self._default_icon)
-        
+        # Reset UI state unless a new recording already started
+        if not self._recording_active():
+            self.is_processing = False
+
+            # Stop animation timer
+            self.animation_timer.stop()
+
+            # Restore original icon
+            self.setIcon(self._default_icon)
+
         logger.error(f"Recording failed: {error_message}")
         
         # Show a brief toast so the user knows what happened
         if self.show_notifications:
             self.toast.show_toast("Recording Failed", error_message, 3000, "error")
+
+    def _recording_active(self) -> bool:
+        """True if a NEW recording is currently in progress.
+
+        Results now arrive asynchronously, so a transcription/failure from a
+        previous take can land while the next recording is already running —
+        those late arrivals must not reset the recording UI.
+        """
+        try:
+            return bool(self.service_manager
+                        and self.service_manager.recording_service
+                        and self.service_manager.recording_service.is_recording)
+        except Exception:
+            return False
 
     @Slot(str)
     def on_transcription_complete(self, text: str):
@@ -406,18 +422,20 @@ class SystemTrayIcon(QSystemTrayIcon):
         logger.debug(f"Current last_llm_result: {self.last_llm_result[:100] if self.last_llm_result else 'None'}...")
         self.update_last_transcription_menu_item()
 
-        # Set processing state
-        self.is_processing = False
+        # Reset UI state unless a new recording already started
+        if not self._recording_active():
+            # Set processing state
+            self.is_processing = False
 
-        # Stop animation timer
-        self.animation_timer.stop()
+            # Stop animation timer
+            self.animation_timer.stop()
 
-        # Reset to default icon
-        self.setIcon(self._default_icon)
+            # Reset to default icon
+            self.setIcon(self._default_icon)
 
-        # Update status
-        self.status_action.setText("Ready")
-        self.setToolTip("Mutter\nReady")
+            # Update status
+            self.status_action.setText("Ready")
+            self.setToolTip("Mutter\nReady")
 
         # Only copy and auto-paste if LLM did NOT process this text
         # (If LLM processed it, on_llm_processing_complete already handled copy/paste)

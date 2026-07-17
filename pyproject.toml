@@ -25,9 +25,6 @@ pynput = "^1.8.1"
 dbus-python = {version = "^1.4.0", platform = "linux"}
 evdev = {version = "^1.6.0", platform = "linux"}
 
-[tool.poetry.extras]
-llm = ["torch", "transformers"]
-
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"
 black = "^23.7.0"

@@ -116,11 +116,10 @@ class TextProcessor:
         Returns:
             LLMProcessingResult or None if processing failed
         """
-        prompt = prompt_template
         if "{text}" in prompt_template:
             prompt = prompt_template.replace("{text}", text)
         else:
-            prompt = prompt + "\n\n{text}"
+            prompt = f"{prompt_template}\n\n{text}"
         return self._process_text(text, prompt, "custom", model)
     
     def _process_text(self, original_text: str, prompt: str, processing_type: str, model: str) -> Optional[LLMProcessingResult]:
@@ -145,48 +144,55 @@ class TextProcessor:
                 "messages": [
                     {"role": "user", "content": prompt}
                 ],
-                "temperature": 0.7,
-                "max_tokens": 32768  # Very high limit - most modern models support 32k+
+                "stream": True,
             }
-            
-            response = self.session.post(
+
+            # (connect_timeout, read_timeout) — read timeout is per-chunk, so streaming keeps
+            # the connection alive across long reasoning traces without tripping a timeout.
+            # `with` ensures the response + underlying socket are released on every exit path.
+            with self.session.post(
                 f"{self.api_url}/chat/completions",
                 json=payload,
-                timeout=60  # 60 second timeout for slower models
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                logger.debug(f"LLM API response: {data}")
-                
-                # Try standard OpenAI format first
-                result = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                
-                # Some APIs use 'text' instead of 'message.content'
-                if not result:
-                    result = data.get("choices", [{}])[0].get("text", "")
-                
-                # Some APIs put response directly in 'response' or 'output'
-                if not result:
-                    result = data.get("response", "") or data.get("output", "")
-                
-                # Clean up result
-                result = result.strip()
-                
-                if result:
-                    return LLMProcessingResult(
-                        original_text=original_text,
-                        processed_text=result,
-                        processing_type=processing_type,
-                        model_name=model
-                    )
-                else:
-                    logger.error(f"Empty result from LLM API. Response structure: {list(data.keys())}")
+                timeout=(10, 60),
+                stream=True,
+            ) as response:
+                if response.status_code != 200:
+                    logger.error(f"LLM API error: {response.status_code}, {response.text}")
                     return None
+
+                result_parts: List[str] = []
+                for raw_line in response.iter_lines(decode_unicode=True):
+                    if not raw_line:
+                        continue
+                    line = raw_line[6:] if raw_line.startswith("data: ") else raw_line
+                    if line == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(line)
+                    except json.JSONDecodeError:
+                        logger.debug(f"Skipping non-JSON stream line: {line!r}")
+                        continue
+
+                    choices = chunk.get("choices") or [{}]
+                    delta = choices[0].get("delta") or {}
+                    # Only collect real output content — ignore `reasoning`/`thinking` fields.
+                    piece = delta.get("content") or ""
+                    if piece:
+                        result_parts.append(piece)
+
+                result = "".join(result_parts).strip()
+
+            if result:
+                return LLMProcessingResult(
+                    original_text=original_text,
+                    processed_text=result,
+                    processing_type=processing_type,
+                    model_name=model
+                )
             else:
-                logger.error(f"LLM API error: {response.status_code}, {response.text}")
+                logger.error("Empty result from LLM API stream")
                 return None
-                
+
         except Exception as e:
             logger.error(f"Error processing text with LLM: {e}")
             return None 

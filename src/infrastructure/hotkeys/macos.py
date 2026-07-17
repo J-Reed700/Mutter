@@ -64,16 +64,21 @@ class MacOSHotkeyHandler(HotkeyHandler):
         self._listener_lock = threading.Lock()
         self._listener_restart_count = 0
         self._max_listener_restarts = 5
-        
+
+        # Guards key/hotkey state shared between the pynput listener thread
+        # and the Qt main thread (cleanup timer, registration calls)
+        self._state_lock = threading.Lock()
+
+        # Flag to temporarily disable hotkeys — must exist before the listener
+        # starts, or an early key event crashes the listener thread
+        self._hotkeys_enabled = True
+
         # Debug logging
         logger.debug("Initializing MacOSHotkeyHandler")
 
         # Start the keyboard listener in a background thread
         self._start_listener()
 
-        # Add a flag to temporarily disable hotkeys
-        self._hotkeys_enabled = True
-        
         # Set up periodic cleanup timer for stale key states
         # This handles cases where key release events are missed (sleep, USB disconnect, etc.)
         self._cleanup_timer = QTimer()
@@ -114,17 +119,23 @@ class MacOSHotkeyHandler(HotkeyHandler):
         """
         current_time = time.time()
         stale_keys = []
-        
-        for key, press_time in list(self._key_press_times.items()):
-            if current_time - press_time > MAX_KEY_HOLD_TIME_SECONDS:
-                stale_keys.append(key)
-        
+
+        with self._state_lock:
+            for key, press_time in list(self._key_press_times.items()):
+                if current_time - press_time > MAX_KEY_HOLD_TIME_SECONDS:
+                    stale_keys.append(key)
+
+            if stale_keys:
+                logger.info(f"Cleaning up {len(stale_keys)} stale key states: {stale_keys}")
+                for key in stale_keys:
+                    self._pressed_keys.discard(key)
+                    del self._key_press_times[key]
+
+                # Reset active hotkey states
+                for ks in self._active_hotkeys:
+                    self._active_hotkeys[ks] = False
+
         if stale_keys:
-            logger.info(f"Cleaning up {len(stale_keys)} stale key states: {stale_keys}")
-            for key in stale_keys:
-                self._pressed_keys.discard(key)
-                del self._key_press_times[key]
-            
             # Also reset recording state if keys were cleaned up
             if self._is_key_held:
                 logger.warning("Resetting recording state due to stale key cleanup")
@@ -136,11 +147,7 @@ class MacOSHotkeyHandler(HotkeyHandler):
                     logger.info("Emitted recording_state_reset signal")
                 except Exception as e:
                     logger.error(f"Error emitting recording_state_reset signal: {e}")
-            
-            # Reset active hotkey states
-            for ks in self._active_hotkeys:
-                self._active_hotkeys[ks] = False
-        
+
         # Check if listener is still alive and restart if needed
         self._check_listener_health()
     
@@ -162,12 +169,13 @@ class MacOSHotkeyHandler(HotkeyHandler):
         """Reset all key tracking state. Call this on device reconnection or other edge cases."""
         logger.info("Resetting hotkey handler state")
         was_recording = self._is_key_held
-        
-        self._pressed_keys.clear()
-        self._key_press_times.clear()
-        self._is_key_held = False
-        for ks in self._active_hotkeys:
-            self._active_hotkeys[ks] = False
+
+        with self._state_lock:
+            self._pressed_keys.clear()
+            self._key_press_times.clear()
+            self._is_key_held = False
+            for ks in self._active_hotkeys:
+                self._active_hotkeys[ks] = False
         
         # Also restart the listener to ensure it's healthy
         self._listener_restart_count = 0  # Reset restart count
@@ -337,18 +345,22 @@ class MacOSHotkeyHandler(HotkeyHandler):
         
         try:
             normalized = self._normalize_key(key)
-            if normalized:
+            if not normalized:
+                return
+
+            triggered = []
+            with self._state_lock:
                 logger.debug(f"Key pressed: {normalized}")
                 self._pressed_keys.add(normalized)
                 # Track when this key was pressed for stale key cleanup
                 self._key_press_times[normalized] = time.time()
-            
+
                 # Special debug for common macOS confusion keys
                 if normalized in ['command', 'control']:
                     logger.debug(f"Detected modifier key: {normalized}")
 
                 # Check if any registered hotkey exactly matches current keys
-                for ks, reg_keys in self.registered_hotkeys.items():
+                for ks, reg_keys in list(self.registered_hotkeys.items()):
                     # Check for exact match (not just subset)
                     active_mods = {k for k in self._pressed_keys if k in ['command', 'control', 'shift', 'alt', 'option']}
                     active_keys = {k for k in self._pressed_keys if k not in ['command', 'control', 'shift', 'alt', 'option']}
@@ -361,48 +373,52 @@ class MacOSHotkeyHandler(HotkeyHandler):
                             # Mark as active to prevent repeat-firing while held
                             self._active_hotkeys[ks] = True
                             logger.debug(f"Hotkey pressed: {ks.toString()} (exact match)")
+                            triggered.append(ks)
 
-                            # Special handling for exit hotkey.
-                            if self.exit_hotkey and ks == self.exit_hotkey:
-                                logger.info(f"Exit hotkey detected: {ks.toString()}")
-                                self.exit_hotkey_pressed.emit()
-                            # Special handling for process text hotkey.
-                            elif self.registered_process_text_hotkey and ks == self.registered_process_text_hotkey:
-                                logger.debug("Process text hotkey detected")
-                                self.process_text_hotkey_pressed.emit()
-                            else:
-                                # Emit hotkey_pressed — RecordingService handles
-                                # start/stop toggle via its own is_recording state.
-                                self.hotkey_pressed.emit()
+            # Emit outside the lock
+            for ks in triggered:
+                # Special handling for exit hotkey.
+                if self.exit_hotkey and ks == self.exit_hotkey:
+                    logger.info(f"Exit hotkey detected: {ks.toString()}")
+                    self.exit_hotkey_pressed.emit()
+                # Special handling for process text hotkey.
+                elif self.registered_process_text_hotkey and ks == self.registered_process_text_hotkey:
+                    logger.debug("Process text hotkey detected")
+                    self.process_text_hotkey_pressed.emit()
+                else:
+                    # Emit hotkey_pressed — RecordingService handles
+                    # start/stop toggle via its own is_recording state.
+                    self.hotkey_pressed.emit()
         except Exception as e:
             logger.error(f"Error in _on_press handler: {e}", exc_info=True)
 
     def _on_release(self, key):
         try:
             normalized = self._normalize_key(key)
-            if normalized in self._pressed_keys:
-                logger.debug(f"Key released: {normalized}")
-                self._pressed_keys.discard(normalized)  # Use discard instead of remove for safety
-                # Remove from press time tracking
-                self._key_press_times.pop(normalized, None)
+            with self._state_lock:
+                if normalized in self._pressed_keys:
+                    logger.debug(f"Key released: {normalized}")
+                    self._pressed_keys.discard(normalized)  # Use discard instead of remove for safety
+                    # Remove from press time tracking
+                    self._key_press_times.pop(normalized, None)
 
-            # For any hotkey that is no longer fully pressed, update its active state
-            for ks, reg_keys in self.registered_hotkeys.items():
-                # Use same exact match checking as in _on_press
-                active_mods = {k for k in self._pressed_keys if k in ['command', 'control', 'shift', 'alt', 'option']}
-                active_keys = {k for k in self._pressed_keys if k not in ['command', 'control', 'shift', 'alt', 'option']}
-                reg_mods = {k for k in reg_keys if k in ['command', 'control', 'shift', 'alt', 'option']}
-                reg_keys_no_mods = {k for k in reg_keys if k not in ['command', 'control', 'shift', 'alt', 'option']}
+                # For any hotkey that is no longer fully pressed, update its active state
+                for ks, reg_keys in list(self.registered_hotkeys.items()):
+                    # Use same exact match checking as in _on_press
+                    active_mods = {k for k in self._pressed_keys if k in ['command', 'control', 'shift', 'alt', 'option']}
+                    active_keys = {k for k in self._pressed_keys if k not in ['command', 'control', 'shift', 'alt', 'option']}
+                    reg_mods = {k for k in reg_keys if k in ['command', 'control', 'shift', 'alt', 'option']}
+                    reg_keys_no_mods = {k for k in reg_keys if k not in ['command', 'control', 'shift', 'alt', 'option']}
 
-                # Check if the hotkey was previously active but is no longer fully pressed
-                # This uses the same exact matching as in _on_press
-                is_still_pressed = reg_mods == active_mods and reg_keys_no_mods.issubset(active_keys)
-                if self._active_hotkeys.get(ks, False) and not is_still_pressed:
-                    self._active_hotkeys[ks] = False
-                    logger.debug(f"Hotkey released: {ks.toString()}")
+                    # Check if the hotkey was previously active but is no longer fully pressed
+                    # This uses the same exact matching as in _on_press
+                    is_still_pressed = reg_mods == active_mods and reg_keys_no_mods.issubset(active_keys)
+                    if self._active_hotkeys.get(ks, False) and not is_still_pressed:
+                        self._active_hotkeys[ks] = False
+                        logger.debug(f"Hotkey released: {ks.toString()}")
 
-                    # We don't emit hotkey_released here to avoid duplicate stops
-                    # The actual stop is handled in _on_press when the hotkey is pressed again
+                        # We don't emit hotkey_released here to avoid duplicate stops
+                        # The actual stop is handled in _on_press when the hotkey is pressed again
         except Exception as e:
             logger.error(f"Error in _on_release handler: {e}", exc_info=True)
 
@@ -451,9 +467,10 @@ class MacOSHotkeyHandler(HotkeyHandler):
                 self._listener = None
         
         # Clear all state
-        self._pressed_keys.clear()
-        self._key_press_times.clear()
-        self._active_hotkeys.clear()
+        with self._state_lock:
+            self._pressed_keys.clear()
+            self._key_press_times.clear()
+            self._active_hotkeys.clear()
 
     # Add a method to enable/disable hotkeys
     def set_hotkeys_enabled(self, enabled: bool):

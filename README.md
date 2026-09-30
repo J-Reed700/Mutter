@@ -13,7 +13,7 @@ A powerful voice recording application with local speech-to-text transcription. 
 
 ### Prerequisites
 
-- Python 3.10 or lower
+- Python 3.11
 - Poetry for dependency management
 - PySide6 for the GUI
 - faster-whisper for transcription

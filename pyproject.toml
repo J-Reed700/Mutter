@@ -8,29 +8,32 @@ packages = [
 ]
 
 [tool.poetry.dependencies]
-python = ">=3.9,<3.12"
-PySide6 = "^6.5.0"
-sounddevice = "^0.4.6"
-numpy = "^1.24.0"
-faster-whisper = "^1.1.0"
-pywin32 = {version = "^306", platform = "win32"}
-cairosvg = "^2.7.1"
-requests = "^2.31.0"
+# 3.11 is what the README installs and what both machines run; the old
+# ">=3.9" floor was pinning the whole native stack (numpy, onnxruntime, av,
+# ctranslate2) to releases that still supported 3.9.
+python = ">=3.11,<3.12"
+PySide6 = "^6.11"
+sounddevice = "^0.5.6"
+numpy = "^2.0"
+faster-whisper = "^1.2.1"
+pywin32 = {version = ">=312", platform = "win32"}
+cairosvg = "^2.9"
+requests = "^2.34"
 
 # Dependencies for local LLM processing (now included in regular build)
-torch = "^2.1.0"
-transformers = "^4.20.0"
+torch = "^2.14"
+transformers = "^5.16"
 python-xlib = {version = "^0.33", platform = "linux"}
-pynput = "^1.8.1"
+pynput = "^1.8.2"
 dbus-python = {version = "^1.4.0", platform = "linux"}
-evdev = {version = "^1.6.0", platform = "linux"}
+evdev = {version = "^2.0", platform = "linux"}
 
 [tool.poetry.group.dev.dependencies]
-pytest = "^7.4.0"
-black = "^23.7.0"
-isort = "^5.12.0"
-mypy = "^1.4.1"
-pyinstaller = "^6.12.0"
+pytest = "^9.1"
+black = "^26.5"
+isort = "^9.0"
+mypy = "^2.3"
+pyinstaller = "^6.22"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

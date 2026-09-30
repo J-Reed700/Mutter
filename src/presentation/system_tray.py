@@ -43,9 +43,11 @@ class SystemTrayIcon(QSystemTrayIcon):
                 logger.warning(f"Failed to set up Linux configuration: {e}")
                 raise e
 
-        # Settings for notifications (defaults)
-        self.show_notifications = False
-        self.auto_paste = True  # Enable auto-paste by default
+        # Appearance defaults — kept in sync with AppearanceSettings so
+        # behavior before set_service_manager() matches a fresh install
+        self.show_notifications = True
+        self.auto_copy_to_clipboard = True
+        self.auto_paste = True
         
         # Create custom toast
         self.toast = CustomToast()
@@ -276,12 +278,14 @@ class SystemTrayIcon(QSystemTrayIcon):
         return paths[0]
 
     def update_settings(self, settings):
-        """Update settings related to notifications"""
+        """Update tray behavior from appearance settings"""
         logger.debug(f"Updating system tray settings")
         if hasattr(settings, 'appearance') and settings.appearance:
             self.show_notifications = settings.appearance.show_notifications
+            self.auto_copy_to_clipboard = settings.appearance.auto_copy_to_clipboard
             self.auto_paste = settings.appearance.auto_paste
             logger.debug(f"Updated settings: show_notifications={self.show_notifications}, "
+                        f"auto_copy_to_clipboard={self.auto_copy_to_clipboard}, "
                         f"auto_paste={self.auto_paste}")
         else:
             logger.debug("No appearance settings available")
@@ -444,10 +448,12 @@ class SystemTrayIcon(QSystemTrayIcon):
 
         if not llm_processed_this:
             # LLM was not enabled or did not process - copy and paste the raw transcription
-            logger.debug("LLM did not process this text - copying and pasting transcription")
-            self.copy_to_clipboard()
+            if self.auto_copy_to_clipboard:
+                logger.debug("Auto-copying raw transcription to clipboard")
+                self.copy_to_clipboard()
 
-            # Auto-paste into current active window if enabled
+            # Auto-paste into current active window if enabled (paste sets the
+            # clipboard itself, so it works independently of auto-copy)
             if self.auto_paste:
                 logger.debug("Auto-pasting raw transcription")
                 self._auto_paste_to_active_window()
@@ -462,9 +468,10 @@ class SystemTrayIcon(QSystemTrayIcon):
         """Show a toast notification indicating transcription is complete"""
         logger.debug("Showing transcription complete toast")
         if self.show_notifications:
+            message = "✓ Copied to clipboard" if self.auto_copy_to_clipboard else "✓ Done"
             self.toast.show_toast(
-                "Transcription Complete", 
-                "✓ Copied to clipboard",
+                "Transcription Complete",
+                message,
                 duration=2500,  # 2.5 seconds - shorter duration
                 icon_type="success"
             )
@@ -539,10 +546,10 @@ class SystemTrayIcon(QSystemTrayIcon):
             self.copy_llm_action.setEnabled(True)
 
         # When LLM is enabled, auto-paste happens HERE after LLM completes
-        # Copy to clipboard and auto-paste the LLM result
-        clipboard = QApplication.clipboard()
-        clipboard.setText(self.last_llm_result)
-        logger.debug(f"Copied LLM result to clipboard: {self.last_llm_result[:100]}...")
+        if self.auto_copy_to_clipboard:
+            clipboard = QApplication.clipboard()
+            clipboard.setText(self.last_llm_result)
+            logger.debug(f"Copied LLM result to clipboard: {self.last_llm_result[:100]}...")
 
         # Auto-paste into current active window if enabled
         if self.auto_paste:
@@ -1006,11 +1013,16 @@ class SystemTrayIcon(QSystemTrayIcon):
 
     def set_service_manager(self, service_manager):
         """Set the service manager reference
-        
+
         Args:
             service_manager: ServiceManager instance
         """
         self.service_manager = service_manager
+
+        # Apply the saved appearance settings immediately — otherwise the
+        # constructor defaults stay in effect until the user re-saves settings
+        if service_manager and service_manager.settings:
+            self.update_settings(service_manager.settings)
 
     def _on_settings_saved(self):
         """Handle settings saved event"""

@@ -366,19 +366,40 @@ class ServiceManager(QObject):
     def reload_settings(self):
         """Reload settings and update all services."""
         logger.info("Reloading settings")
-        
+
+        old_settings = self._settings
+
         # Reload settings from repository
         self._settings = self._settings_repository.load()
-        
+
         # Log key settings values after reload
         logger.info(f"Reloaded settings with values: "
                    f"quit_key={self._settings.hotkeys.quit_key.toString() if self._settings.hotkeys.quit_key else 'None'}, "
                    f"record_key={self._settings.hotkeys.record_key.toString()}")
-        
+
         # Update services with new settings
         # Note: update_settings() handles LLM, audio, and hotkey updates internally
         if self._recording_service:
             self._recording_service.update_settings(self._settings)
+
+        # The transcriber bakes in model size and device at construction time,
+        # so a change requires a rebuild. Done in the background — loading a
+        # Whisper model can take several seconds and must not block the UI.
+        if old_settings and (
+            old_settings.transcription.model != self._settings.transcription.model or
+            old_settings.transcription.device != self._settings.transcription.device
+        ):
+            logger.info(
+                f"Transcription settings changed "
+                f"(model: {old_settings.transcription.model} -> {self._settings.transcription.model}, "
+                f"device: {old_settings.transcription.device} -> {self._settings.transcription.device}); "
+                f"rebuilding transcriber in background"
+            )
+            threading.Thread(
+                target=self._recover_transcription_service,
+                daemon=True,
+                name="TranscriberRebuild"
+            ).start()
     
     def save_settings(self):
         """Save current settings to storage."""

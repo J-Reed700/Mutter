@@ -13,30 +13,42 @@ import sounddevice as sd
 import logging
 from pathlib import Path
 
-from ...domain.settings import Settings
+from ...domain.settings import Settings, DEFAULT_LLM_PROMPT
 from ...infrastructure.persistence.settings_repository import SettingsRepository
 from ..theme import AppTheme
 
-logger = logging.getLogger(__name__)
+# Display name -> Whisper language code (None = auto-detect)
+LANGUAGE_OPTIONS = [
+    ("Auto-detect", None),
+    ("English", "en"),
+    ("Spanish", "es"),
+    ("French", "fr"),
+    ("German", "de"),
+    ("Italian", "it"),
+    ("Portuguese", "pt"),
+    ("Dutch", "nl"),
+    ("Russian", "ru"),
+    ("Arabic", "ar"),
+    ("Hindi", "hi"),
+    ("Chinese", "zh"),
+    ("Japanese", "ja"),
+    ("Korean", "ko"),
+]
 
-# Define constants if not in AppTheme
-if not hasattr(AppTheme, 'TEXT_SECONDARY'):
-    setattr(AppTheme, 'TEXT_SECONDARY', '#777777')
-if not hasattr(AppTheme, 'FONT_SIZE_SMALL'):
-    setattr(AppTheme, 'FONT_SIZE_SMALL', 8)
-if not hasattr(AppTheme, 'ACCENT'):
-    setattr(AppTheme, 'ACCENT', '#0078D7')
+# Legacy settings stored full names ("English") instead of codes
+_LANGUAGE_NAME_TO_CODE = {name.lower(): code for name, code in LANGUAGE_OPTIONS}
+
+logger = logging.getLogger(__name__)
 
 class SettingsWindow(QMainWindow):
     # Add a signal to indicate settings were saved
     settings_saved = Signal()
-    
+
     def __init__(self, settings: Settings, settings_repository: SettingsRepository):
         super().__init__()
         self.settings = settings
         self.settings_repository = settings_repository
         self.save_requested = False  # Track if Save button was clicked
-        self.settings_changed = False  # Track if any settings were actually changed
         
         # Log settings values at initialization
         logger.info(f"SettingsWindow initialized with: "
@@ -44,7 +56,7 @@ class SettingsWindow(QMainWindow):
                    f"record_key={self.settings.hotkeys.record_key.toString()}")
         
         self.setWindowTitle("Mutter Settings")
-        self.setMinimumSize(600, 500)
+        self.setMinimumSize(640, 640)
         
         # Set window icon if available
         icon_path = Path(__file__).parent.parent.parent.parent / "resources" / "images" / "microphone.png"
@@ -57,7 +69,8 @@ class SettingsWindow(QMainWindow):
         layout = QVBoxLayout(central_widget)
         layout.setContentsMargins(20, 20, 20, 20)
         
-        # Apply a simpler combo box styling that will be more reliable
+        # Colors and control styling come from the app-wide theme; only local
+        # sizing tweaks live here
         self.setStyleSheet("""
             QComboBox {
                 padding: 5px;
@@ -67,7 +80,7 @@ class SettingsWindow(QMainWindow):
                 padding: 8px;
             }
         """)
-        
+
         # Header with title and version
         header_layout = QHBoxLayout()
         title_label = QLabel("Mutter Settings")
@@ -76,53 +89,106 @@ class SettingsWindow(QMainWindow):
         title_font.setBold(True)
         title_label.setFont(title_font)
         header_layout.addWidget(title_label)
-        
-        version_label = QLabel("v1.0.0")  # Update with your actual version
-        version_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        header_layout.addWidget(version_label)
-        
+
+        version = self._get_app_version()
+        if version:
+            version_label = QLabel(f"v{version}")
+            version_label.setProperty("labelStyle", "hint")
+            version_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            header_layout.addWidget(version_label)
+
         layout.addLayout(header_layout)
-        
-        # Add a separator line
-        separator = QFrame()
-        separator.setFrameShape(QFrame.HLine)
-        separator.setFrameShadow(QFrame.Sunken)
-        layout.addWidget(separator)
-        
+
         # Create tab widget
         tabs = QTabWidget()
         layout.addWidget(tabs)
-        
+
         # Add tabs
         tabs.addTab(self._create_hotkeys_tab(), "Hotkeys")
         tabs.addTab(self._create_audio_tab(), "Audio")
         tabs.addTab(self._create_transcription_tab(), "Transcription")
         tabs.addTab(self._create_llm_tab(), "LLM Processing")
         tabs.addTab(self._create_appearance_tab(), "Appearance")
-        
-        # Add bottom buttons
+
+        # Separator between content and actions
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setFrameShadow(QFrame.Sunken)
+        layout.addWidget(separator)
+
+        # Bottom action buttons, right-aligned
         button_layout = QHBoxLayout()
         layout.addLayout(button_layout)
-        
-        # Add quit button on the left
-        quit_button = QPushButton("Quit Application")
-        quit_button.setStyleSheet(f"background-color: {AppTheme.ACCENT}; color: white;")
-        quit_button.clicked.connect(self._quit_application)
-        button_layout.addWidget(quit_button)
-        
-        # Add spacer to push buttons to the right
         button_layout.addStretch()
-        
-        # Cancel button
+
         cancel_button = QPushButton("Cancel")
-        cancel_button.setStyleSheet("background-color: #e0e0e0; color: #333333;")
+        cancel_button.setProperty("buttonStyle", "secondary")
         cancel_button.clicked.connect(self.close)
         button_layout.addWidget(cancel_button)
-        
-        # Save button
+
         save_button = QPushButton("Save")
+        save_button.setDefault(True)
         save_button.clicked.connect(self._save_settings)
         button_layout.addWidget(save_button)
+
+        # Snapshot the UI state so closing can reliably detect real edits —
+        # signal-based dirty tracking misfires on programmatic changes
+        self._initial_ui_state = self._ui_state()
+
+    def _ui_state(self) -> tuple:
+        """Collect every editable value in the window for change detection."""
+        return (
+            self.record_hotkey_edit.keySequence().toString(),
+            self.quit_hotkey_edit.keySequence().toString(),
+            self.process_hotkey_edit.keySequence().toString(),
+            self.device_combo.currentData(),
+            self.sample_rate_combo.currentData(),
+            self.channels_spin.value(),
+            self.model_combo.currentText(),
+            self.device_type_combo.currentText(),
+            self.language_combo.currentData(),
+            self.llm_enabled_check.isChecked(),
+            self.llm_api_url_edit.text(),
+            self.llm_model_combo.currentText(),
+            self.llm_username_edit.text(),
+            self.llm_password_edit.text(),
+            self.custom_prompt_edit.toPlainText(),
+            self.show_notif_check.isChecked(),
+            self.clipboard_check.isChecked(),
+            self.auto_paste_check.isChecked(),
+        )
+
+    def _has_unsaved_changes(self) -> bool:
+        """True if any control differs from the state the window opened with."""
+        try:
+            return self._ui_state() != self._initial_ui_state
+        except Exception as e:
+            logger.warning(f"Could not compute UI state for change detection: {e}")
+            return False
+
+    @staticmethod
+    def _get_app_version() -> str:
+        """Best-effort application version for the header (empty if unknown)."""
+        try:
+            from importlib.metadata import version
+            return version("voice-recorder")
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _hint_label(text: str) -> QLabel:
+        """A small secondary-color label for inline help text."""
+        label = QLabel(text)
+        label.setWordWrap(True)
+        label.setProperty("labelStyle", "hint")
+        return label
+
+    @staticmethod
+    def _secondary_button(text: str) -> QPushButton:
+        """A compact, quiet button for minor utility actions."""
+        button = QPushButton(text)
+        button.setProperty("buttonStyle", "secondary")
+        return button
     
     def _create_hotkeys_tab(self) -> QWidget:
         widget = QWidget()
@@ -147,8 +213,8 @@ class SettingsWindow(QMainWindow):
             self.settings.hotkeys.record_key
         )
         self.record_hotkey_edit.setMaximumSequenceLength(1)
-        self.record_hotkey_edit.setMinimumWidth(200)
-        self.record_hotkey_edit.editingFinished.connect(self._mark_settings_changed)
+        self.record_hotkey_edit.setFixedWidth(240)
+        self.record_hotkey_edit.keySequenceChanged.connect(self._update_hotkey_displays)
         record_layout.addRow("Record Key:", self.record_hotkey_edit)
         
         # Add a display label for showing friendly key representation
@@ -168,17 +234,52 @@ class SettingsWindow(QMainWindow):
             self.settings.hotkeys.quit_key or QKeySequence()
         )
         self.quit_hotkey_edit.setMaximumSequenceLength(1)
-        self.quit_hotkey_edit.setMinimumWidth(200)
-        self.quit_hotkey_edit.editingFinished.connect(self._mark_settings_changed)
+        self.quit_hotkey_edit.setFixedWidth(240)
+        self.quit_hotkey_edit.keySequenceChanged.connect(self._update_hotkey_displays)
         quit_layout.addRow("Quit Key:", self.quit_hotkey_edit)
-        
+
         # Add a display label for showing friendly key representation
         self.quit_hotkey_display = QLabel("")
         self.quit_hotkey_display.setStyleSheet(f"color: {AppTheme.TEXT_SECONDARY}; font-style: italic;")
         quit_layout.addRow("", self.quit_hotkey_display)
-        
+
         layout.addWidget(quit_group)
-        
+
+        # Process text hotkey (re-runs LLM processing on the last transcription)
+        process_group = QGroupBox("Process Text Hotkey")
+        process_layout = QFormLayout(process_group)
+        process_layout.setContentsMargins(15, 20, 15, 15)
+        process_layout.setSpacing(10)
+
+        process_help = self._hint_label(
+            "Optional: re-process the most recent transcription with the LLM. "
+            "Leave empty to disable."
+        )
+        process_layout.addRow(process_help)
+
+        self.process_hotkey_edit = QKeySequenceEdit(
+            self.settings.hotkeys.process_text_key or QKeySequence()
+        )
+        self.process_hotkey_edit.setMaximumSequenceLength(1)
+        self.process_hotkey_edit.setFixedWidth(240)
+        self.process_hotkey_edit.keySequenceChanged.connect(self._update_hotkey_displays)
+
+        clear_process_button = self._secondary_button("Clear")
+        clear_process_button.clicked.connect(self.process_hotkey_edit.clear)
+
+        process_key_row = QHBoxLayout()
+        process_key_row.setSpacing(8)
+        process_key_row.addWidget(self.process_hotkey_edit)
+        process_key_row.addWidget(clear_process_button)
+        process_key_row.addStretch()
+        process_layout.addRow("Process Key:", process_key_row)
+
+        self.process_hotkey_display = QLabel("")
+        self.process_hotkey_display.setStyleSheet(f"color: {AppTheme.TEXT_SECONDARY}; font-style: italic;")
+        process_layout.addRow("", self.process_hotkey_display)
+
+        layout.addWidget(process_group)
+
         layout.addStretch()
         
         # Initial update of displays
@@ -206,20 +307,24 @@ class SettingsWindow(QMainWindow):
         device_layout.setSpacing(10)
         
         self.device_combo = QComboBox()
-        self.device_combo.setMinimumWidth(300)
+        self.device_combo.setMinimumWidth(280)
+        self.device_combo.setMaximumWidth(420)
         self.device_combo.setMinimumHeight(30)
         self._populate_audio_devices()
-        
+
         # Mark settings changed but don't call _on_device_changed here to avoid adding duplicate rates
-        self.device_combo.currentIndexChanged.connect(self._mark_settings_changed)
-        device_layout.addRow("Input Device:", self.device_combo)
-        
-        # Refresh button
-        refresh_button = QPushButton("Refresh Devices")
-        refresh_button.setStyleSheet("padding: 5px 10px;")
+
+        refresh_button = self._secondary_button("Refresh")
+        refresh_button.setToolTip("Rescan available input devices")
         refresh_button.clicked.connect(self._populate_audio_devices)
-        device_layout.addRow("", refresh_button)
-        
+
+        device_row = QHBoxLayout()
+        device_row.setSpacing(8)
+        device_row.addWidget(self.device_combo)
+        device_row.addWidget(refresh_button)
+        device_row.addStretch()
+        device_layout.addRow("Input Device:", device_row)
+
         layout.addWidget(device_group)
         
         # Audio settings
@@ -229,39 +334,29 @@ class SettingsWindow(QMainWindow):
         settings_layout.setSpacing(10)
         
         self.sample_rate_combo = QComboBox()
-        self.sample_rate_combo.setMinimumWidth(200)
+        self.sample_rate_combo.setFixedWidth(240)
         self.sample_rate_combo.setMinimumHeight(30)
         for rate in [8000, 16000, 22050, 32000, 44100, 48000, 96000]:
             self.sample_rate_combo.addItem(f"{rate} Hz", rate)
-        
-        # Find and select the current sample rate
-        for i in range(self.sample_rate_combo.count()):
-            if self.sample_rate_combo.itemData(i) == self.settings.audio.sample_rate:
-                self.sample_rate_combo.setCurrentIndex(i)
-                break
-            else:
-                # If not found, add it
-                self.sample_rate_combo.addItem(f"{self.settings.audio.sample_rate} Hz", self.settings.audio.sample_rate)
-                self.sample_rate_combo.setCurrentIndex(self.sample_rate_combo.count() - 1)
-        
-        self.sample_rate_combo.currentIndexChanged.connect(self._mark_settings_changed)
+
+        # Find and select the current sample rate, adding it if not present
+        current_rate_index = self.sample_rate_combo.findData(self.settings.audio.sample_rate)
+        if current_rate_index < 0:
+            self.sample_rate_combo.addItem(f"{self.settings.audio.sample_rate} Hz", self.settings.audio.sample_rate)
+            current_rate_index = self.sample_rate_combo.count() - 1
+        self.sample_rate_combo.setCurrentIndex(current_rate_index)
+
         settings_layout.addRow("Sample Rate:", self.sample_rate_combo)
         
-        # Add a sample rate description
-        sample_rate_desc = QLabel("Higher sample rates provide better audio quality")
-        sample_rate_desc.setStyleSheet("color: #666666; font-size: 12px;")
-        settings_layout.addRow("", sample_rate_desc)
-        
+        settings_layout.addRow("", self._hint_label("Higher sample rates provide better audio quality"))
+
         self.channels_spin = QSpinBox()
         self.channels_spin.setRange(1, 2)
+        self.channels_spin.setFixedWidth(80)
         self.channels_spin.setValue(self.settings.audio.channels)
-        self.channels_spin.valueChanged.connect(self._mark_settings_changed)
         settings_layout.addRow("Channels:", self.channels_spin)
-        
-        # Add a channels description
-        channels_desc = QLabel("1 = Mono, 2 = Stereo")
-        channels_desc.setStyleSheet("color: #666666; font-size: 12px;")
-        settings_layout.addRow("", channels_desc)
+
+        settings_layout.addRow("", self._hint_label("1 = Mono, 2 = Stereo"))
         
         layout.addWidget(settings_group)
         layout.addStretch()
@@ -272,17 +367,27 @@ class SettingsWindow(QMainWindow):
         """Create the transcription tab with all settings for speech recognition."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
+        layout.setContentsMargins(15, 15, 15, 15)
+
+        # Help text at the top
+        help_label = QLabel(
+            "Choose the speech recognition model and language. "
+            "Larger models are more accurate but slower."
+        )
+        help_label.setWordWrap(True)
+        layout.addWidget(help_label)
 
         # Model selection group
-        model_group = QGroupBox("Transcription Model Settings")
+        model_group = QGroupBox("Model")
         model_layout = QFormLayout(model_group)
+        model_layout.setContentsMargins(15, 20, 15, 15)
+        model_layout.setSpacing(10)
 
         # Model dropdown
         self.model_combo = QComboBox()
         self.model_combo.addItems(["tiny", "base", "small", "medium", "large"])
         self.model_combo.setCurrentText(self.settings.transcription.model)
-        self.model_combo.currentTextChanged.connect(self._mark_settings_changed)
-        self.model_combo.setMinimumWidth(200)
+        self.model_combo.setFixedWidth(240)
         self.model_combo.setMinimumHeight(30)
         
         # Add tooltip to explain model sizes
@@ -310,8 +415,7 @@ class SettingsWindow(QMainWindow):
         current_device = "cpu - Works on all computers" if self.settings.transcription.device == "cpu" else "cuda - Requires NVIDIA GPU with CUDA libraries"
         self.device_type_combo.setCurrentText(current_device)
         
-        self.device_type_combo.currentTextChanged.connect(self._mark_settings_changed)
-        self.device_type_combo.setMinimumWidth(200)
+        self.device_type_combo.setFixedWidth(340)
         self.device_type_combo.setMinimumHeight(30)
         
         # Add tooltip to explain device options
@@ -328,17 +432,28 @@ class SettingsWindow(QMainWindow):
         layout.addWidget(model_group)
 
         # Language selection group
-        language_group = QGroupBox("Language Settings")
+        language_group = QGroupBox("Language")
         language_layout = QFormLayout(language_group)
+        language_layout.setContentsMargins(15, 20, 15, 15)
+        language_layout.setSpacing(10)
 
-        # Language dropdown
+        # Language dropdown — stores ISO codes as item data (None = auto-detect)
         self.language_combo = QComboBox()
-        languages = ["English", "Spanish", "French", "German", "Italian", "Portuguese", "Dutch", 
-                     "Russian", "Arabic", "Chinese", "Japanese", "Korean", "Auto-detect"]
-        self.language_combo.addItems(languages)
-        self.language_combo.setCurrentText(self.settings.transcription.language or "English")
-        self.language_combo.currentTextChanged.connect(self._mark_settings_changed)
-        self.language_combo.setMinimumWidth(200)
+        for name, code in LANGUAGE_OPTIONS:
+            self.language_combo.addItem(name, code)
+
+        current_language = self.settings.transcription.language
+        if current_language and current_language.lower() in _LANGUAGE_NAME_TO_CODE:
+            # Legacy settings stored full names — map them to codes
+            current_language = _LANGUAGE_NAME_TO_CODE[current_language.lower()]
+        language_index = self.language_combo.findData(current_language)
+        if language_index < 0:
+            # Unknown code (e.g. hand-edited settings file): keep it selectable
+            self.language_combo.addItem(current_language, current_language)
+            language_index = self.language_combo.count() - 1
+        self.language_combo.setCurrentIndex(language_index)
+
+        self.language_combo.setFixedWidth(240)
         self.language_combo.setMinimumHeight(30)
         language_layout.addRow("Language:", self.language_combo)
 
@@ -377,7 +492,6 @@ class SettingsWindow(QMainWindow):
         self.llm_enabled_check = QCheckBox("Enable LLM processing after transcription")
         self.llm_enabled_check.setChecked(self.settings.llm.enabled)
         self.llm_enabled_check.toggled.connect(self._on_llm_enabled_toggled)
-        self.llm_enabled_check.toggled.connect(self._mark_settings_changed)
         enable_layout.addRow("", self.llm_enabled_check)
         
         layout.addWidget(enable_group)
@@ -390,6 +504,7 @@ class SettingsWindow(QMainWindow):
         
         self.llm_api_url_edit = QLineEdit()
         self.llm_api_url_edit.setMinimumWidth(300)
+        self.llm_api_url_edit.setMaximumWidth(420)
         self.llm_api_url_edit.setMinimumHeight(30)
         self.llm_api_url_edit.setPlaceholderText("http://localhost:11434/v1")
         
@@ -399,13 +514,13 @@ class SettingsWindow(QMainWindow):
         else:
             self.llm_api_url_edit.setText("http://localhost:11434/v1")
         
-        self.llm_api_url_edit.textChanged.connect(self._mark_settings_changed)
         external_layout.addRow("API URL:", self.llm_api_url_edit)
         
         # Model dropdown (populated by Test Connection)
         self.llm_model_combo = QComboBox()
         self.llm_model_combo.setEditable(True)  # Allow custom model names
         self.llm_model_combo.setMinimumWidth(300)
+        self.llm_model_combo.setMaximumWidth(420)
         self.llm_model_combo.setMinimumHeight(30)
         self.llm_model_combo.lineEdit().setPlaceholderText("Click 'Test Connection' to load models")
         
@@ -413,61 +528,56 @@ class SettingsWindow(QMainWindow):
             self.llm_model_combo.addItem(self.settings.llm.model)
             self.llm_model_combo.setCurrentText(self.settings.llm.model)
         
-        self.llm_model_combo.currentTextChanged.connect(self._mark_settings_changed)
         external_layout.addRow("Model:", self.llm_model_combo)
         
         # Authentication fields (for reverse proxy like Pangolin)
-        auth_label = QLabel("Authentication (optional, for reverse proxy)")
-        auth_label.setStyleSheet("color: #666666; font-size: 12px; margin-top: 10px;")
-        external_layout.addRow("", auth_label)
-        
+        external_layout.addRow("", self._hint_label("Authentication (optional, for reverse proxy)"))
+
         self.llm_username_edit = QLineEdit()
         self.llm_username_edit.setMinimumWidth(300)
+        self.llm_username_edit.setMaximumWidth(420)
         self.llm_username_edit.setMinimumHeight(30)
         self.llm_username_edit.setPlaceholderText("Username (leave empty if not required)")
-        
-        if hasattr(self.settings.llm, 'api_username') and self.settings.llm.api_username:
+
+        if self.settings.llm.api_username:
             self.llm_username_edit.setText(self.settings.llm.api_username)
-        
-        self.llm_username_edit.textChanged.connect(self._mark_settings_changed)
+
         external_layout.addRow("Username:", self.llm_username_edit)
-        
+
         self.llm_password_edit = QLineEdit()
         self.llm_password_edit.setMinimumWidth(300)
+        self.llm_password_edit.setMaximumWidth(420)
         self.llm_password_edit.setMinimumHeight(30)
         self.llm_password_edit.setPlaceholderText("Password (leave empty if not required)")
         self.llm_password_edit.setEchoMode(QLineEdit.Password)  # Hide password
-        
-        if hasattr(self.settings.llm, 'api_password') and self.settings.llm.api_password:
+
+        if self.settings.llm.api_password:
             self.llm_password_edit.setText(self.settings.llm.api_password)
-        
-        self.llm_password_edit.textChanged.connect(self._mark_settings_changed)
+
         external_layout.addRow("Password:", self.llm_password_edit)
-        
-        external_desc = QLabel("Click 'Test Connection' to verify the server and load available models.")
-        external_desc.setStyleSheet("color: #666666; font-size: 12px;")
-        external_desc.setWordWrap(True)
+
+        external_desc = self._hint_label("Test the connection to verify the server and load available models.")
         external_layout.addRow("", external_desc)
-        
-        # Button row for test and warm up
+
+        layout.addWidget(self.external_group)
+
+        # Button row for test and warm up — deliberately OUTSIDE the group
+        # gated by the enable checkbox, so the server can be tested before
+        # LLM processing is switched on
         button_layout = QHBoxLayout()
-        button_layout.setSpacing(10)
-        
-        # Test connection button
-        test_button = QPushButton("Test Connection && Load Models")
+        button_layout.setSpacing(8)
+
+        test_button = self._secondary_button("Test Connection && Load Models")
         test_button.clicked.connect(self._test_llm_connection)
         button_layout.addWidget(test_button)
-        
-        # Warm up button
-        warmup_button = QPushButton("Warm Up Model")
+
+        warmup_button = self._secondary_button("Warm Up Model")
         warmup_button.setToolTip("Send a test request to load the model into memory (may take 1-2 minutes)")
         warmup_button.clicked.connect(self._warm_up_model)
         button_layout.addWidget(warmup_button)
-        
+
         button_layout.addStretch()
-        external_layout.addRow("", button_layout)
-        
-        layout.addWidget(self.external_group)
+        layout.addLayout(button_layout)
         
         # ---------- System Prompt ----------
         prompt_group = QGroupBox("System Prompt")
@@ -475,22 +585,16 @@ class SettingsWindow(QMainWindow):
         prompt_layout.setContentsMargins(15, 20, 15, 15)
         prompt_layout.setSpacing(10)
         
-        prompt_desc = QLabel("Enter your prompt below. Use {text} as a placeholder for the transcribed text.")
-        prompt_desc.setStyleSheet("color: #666666; font-size: 12px;")
-        prompt_desc.setWordWrap(True)
+        prompt_desc = self._hint_label("Enter your prompt below. Use {text} as a placeholder for the transcribed text.")
         prompt_layout.addWidget(prompt_desc)
         
         self.custom_prompt_edit = QTextEdit()
         self.custom_prompt_edit.setMinimumHeight(100)
-        self.custom_prompt_edit.setPlaceholderText("Fix any grammar, spelling, and punctuation errors in the following text. Keep the meaning exactly the same. Only output the corrected text, nothing else:\n\n{text}")
-        
+        self.custom_prompt_edit.setPlaceholderText(DEFAULT_LLM_PROMPT)
+
         # Set the current custom prompt
-        if hasattr(self.settings.llm, 'custom_prompt') and self.settings.llm.custom_prompt:
-            self.custom_prompt_edit.setText(self.settings.llm.custom_prompt)
-        else:
-            self.custom_prompt_edit.setText("Fix any grammar, spelling, and punctuation errors in the following text. Keep the meaning exactly the same. Only output the corrected text, nothing else:\n\n{text}")
-        
-        self.custom_prompt_edit.textChanged.connect(self._mark_settings_changed)
+        self.custom_prompt_edit.setText(self.settings.llm.custom_prompt or DEFAULT_LLM_PROMPT)
+
         prompt_layout.addWidget(self.custom_prompt_edit)
         
         layout.addWidget(prompt_group)
@@ -543,24 +647,28 @@ class SettingsWindow(QMainWindow):
         notif_layout = QFormLayout(notif_group)
         notif_layout.setContentsMargins(15, 20, 15, 15)
         notif_layout.setSpacing(10)
-        
+
         self.show_notif_check = QCheckBox("Show notifications")
-        self.show_notif_check.setChecked(self.settings.appearance.show_notifications if hasattr(self.settings, 'appearance') else True)
-        self.show_notif_check.toggled.connect(self._mark_settings_changed)
+        self.show_notif_check.setChecked(self.settings.appearance.show_notifications)
         notif_layout.addRow("", self.show_notif_check)
-        
-        
-        self.clipboard_check = QCheckBox("Auto-copy transcription to clipboard")
-        self.clipboard_check.setChecked(self.settings.appearance.auto_copy_to_clipboard if hasattr(self.settings, 'appearance') else True)
-        self.clipboard_check.toggled.connect(self._mark_settings_changed)
-        notif_layout.addRow("", self.clipboard_check)
-        
-        self.auto_paste_check = QCheckBox("Auto-paste transcription into active text field")
-        self.auto_paste_check.setChecked(self.settings.appearance.auto_paste if hasattr(self.settings, 'appearance') else True)
-        self.auto_paste_check.toggled.connect(self._mark_settings_changed)
-        notif_layout.addRow("", self.auto_paste_check)
-        
+
         layout.addWidget(notif_group)
+
+        # Output behavior settings
+        output_group = QGroupBox("Transcription Output")
+        output_layout = QFormLayout(output_group)
+        output_layout.setContentsMargins(15, 20, 15, 15)
+        output_layout.setSpacing(10)
+
+        self.clipboard_check = QCheckBox("Auto-copy transcription to clipboard")
+        self.clipboard_check.setChecked(self.settings.appearance.auto_copy_to_clipboard)
+        output_layout.addRow("", self.clipboard_check)
+
+        self.auto_paste_check = QCheckBox("Auto-paste transcription into active text field")
+        self.auto_paste_check.setChecked(self.settings.appearance.auto_paste)
+        output_layout.addRow("", self.auto_paste_check)
+
+        layout.addWidget(output_group)
         
         # Theme settings (for future implementation)
         # theme_group = QGroupBox("Theme")
@@ -573,7 +681,6 @@ class SettingsWindow(QMainWindow):
         # self.theme_combo.setMinimumHeight(30)
         # self.theme_combo.addItems(['Light', 'Dark', 'System'])
         # self.theme_combo.setCurrentText(self.settings.appearance.theme if hasattr(self.settings, 'appearance') else 'Light')
-        # self.theme_combo.currentIndexChanged.connect(self._mark_settings_changed)
         # theme_layout.addRow("Theme:", self.theme_combo)
         # 
         # # Add a theme description
@@ -589,8 +696,13 @@ class SettingsWindow(QMainWindow):
     def _populate_audio_devices(self):
         """Populate the audio devices combo box"""
         devices = sd.query_devices()
+
+        # Repopulating fires currentIndexChanged for every clear/add — block
+        # signals so a device refresh doesn't count as a settings change.
+        previous_selection = self.device_combo.currentData()
+        self.device_combo.blockSignals(True)
         self.device_combo.clear()
-        
+
         # Add default device
         self.device_combo.addItem("Default", "default")
         
@@ -641,6 +753,14 @@ class SettingsWindow(QMainWindow):
                         display_name = f"{dev['name']} (ID: {idx}, {dev['max_input_channels']} ch, {sample_rate} Hz)"
                         self.device_combo.addItem(display_name, dev['name'])
         
+        # On refresh, keep whatever the user had selected if it still exists
+        if previous_selection is not None:
+            previous_index = self.device_combo.findData(previous_selection)
+            if previous_index >= 0:
+                self.device_combo.setCurrentIndex(previous_index)
+
+        self.device_combo.blockSignals(False)
+
         # Connect device change signal to update sample rate
         # Disconnect first to avoid multiple connections
         try:
@@ -652,8 +772,6 @@ class SettingsWindow(QMainWindow):
     
     def _on_device_changed(self, index):
         """Handle device selection changes"""
-        self._mark_settings_changed()
-        
         # Get selected device and update sample rate dropdown to match device's default
         device_name = self.device_combo.currentData()
         
@@ -702,19 +820,18 @@ class SettingsWindow(QMainWindow):
                 if closest_index >= 0:
                     # If we don't have an exact match, add the device's default rate
                     if closest_diff > 0:
-                        # Add the device's default sample rate to the dropdown
-                        self.sample_rate_combo.addItem(f"{default_sample_rate} Hz (device default)", default_sample_rate)
-                        self.sample_rate_combo.setCurrentIndex(self.sample_rate_combo.count() - 1)
+                        # Reuse an existing entry for this rate if one was already added
+                        existing_index = self.sample_rate_combo.findData(default_sample_rate)
+                        if existing_index < 0:
+                            self.sample_rate_combo.addItem(f"{default_sample_rate} Hz (device default)", default_sample_rate)
+                            existing_index = self.sample_rate_combo.count() - 1
+                        self.sample_rate_combo.setCurrentIndex(existing_index)
                     else:
                         self.sample_rate_combo.setCurrentIndex(closest_index)
                         
                     logger.debug(f"Selected sample rate {self.sample_rate_combo.currentText()} for device {device_name}")
         except Exception as e:
             logger.error(f"Error updating sample rate for device: {e}")
-    
-    def _mark_settings_changed(self):
-        """Mark that settings have been changed"""
-        self.settings_changed = True
     
     @Slot()
     def _save_settings(self):
@@ -726,6 +843,15 @@ class SettingsWindow(QMainWindow):
             # Get the key sequence from the editor
             record_key = self.record_hotkey_edit.keySequence()
             record_key_str = record_key.toString()
+
+            # The record hotkey is required — without it the app can't record
+            if record_key.isEmpty():
+                QMessageBox.warning(
+                    self,
+                    "Record Hotkey Required",
+                    "The record hotkey cannot be empty. Please set a key combination for recording."
+                )
+                return
             
             # On macOS, ensure that if "Ctrl" is used, we mention this might not work as expected
             import platform
@@ -798,7 +924,11 @@ class SettingsWindow(QMainWindow):
             
             # Log raw key data for debugging
             logger.debug(f"Final key sequence for quit hotkey: {quit_key.toString()}")
-            self.settings.hotkeys.quit_key = quit_key
+            self.settings.hotkeys.quit_key = quit_key if not quit_key.isEmpty() else None
+
+        if hasattr(self, 'process_hotkey_edit'):
+            process_key = self.process_hotkey_edit.keySequence()
+            self.settings.hotkeys.process_text_key = process_key if not process_key.isEmpty() else None
         
         # 2. Audio tab
         if hasattr(self, 'device_combo'):
@@ -818,9 +948,8 @@ class SettingsWindow(QMainWindow):
             self.settings.transcription.device = "cpu" if device_text.startswith("cpu") else "cuda"
         
         if hasattr(self, 'language_combo'):
-            self.settings.transcription.language = self.language_combo.currentText()
-            if self.settings.transcription.language == "Auto-detect":
-                self.settings.transcription.language = None
+            # Item data holds the ISO code; None means auto-detect
+            self.settings.transcription.language = self.language_combo.currentData()
                 
         # Log key settings that are being saved
         logger.info(f"Saving settings with values: "
@@ -855,14 +984,10 @@ class SettingsWindow(QMainWindow):
             if hasattr(self, 'llm_password_edit'):
                 self.settings.llm.api_password = self.llm_password_edit.text()
             
-            # Save custom prompt
+            # Save custom prompt (fall back to the default if left empty)
             if hasattr(self, 'custom_prompt_edit'):
                 prompt = self.custom_prompt_edit.toPlainText().strip()
-                if prompt:
-                    self.settings.llm.custom_prompt = prompt
-                else:
-                    # Use default if prompt is empty
-                    self.settings.llm.custom_prompt = "Fix any grammar, spelling, and punctuation errors in the following text. Keep the meaning exactly the same. Only output the corrected text, nothing else:\n\n{text}"
+                self.settings.llm.custom_prompt = prompt if prompt else DEFAULT_LLM_PROMPT
         
         # 5. Appearance tab
         if not hasattr(self.settings, 'appearance'):
@@ -888,8 +1013,8 @@ class SettingsWindow(QMainWindow):
             
             # Set save_requested to True to avoid the unsaved changes dialog
             self.save_requested = True
-            self.settings_changed = False  # Reset the changed flag
-            
+            self._initial_ui_state = self._ui_state()  # Saved state is the new baseline
+
             # Close the window
             self.close()
             
@@ -897,133 +1022,153 @@ class SettingsWindow(QMainWindow):
             QMessageBox.critical(self, "Error", f"Failed to save settings: {str(e)}")
             return
 
-    def _quit_application(self):
-        """Quit the application with confirmation"""
-        confirm = QMessageBox.question(
-            self,
-            "Quit Application",
-            "Are you sure you want to quit the application?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
-        
-        if confirm == QMessageBox.Yes:
-            QApplication.quit()
-
     def _on_llm_enabled_toggled(self, enabled):
         """Handle LLM enabled checkbox toggle"""
         self._update_llm_settings_enabled(enabled)
     
-    def _test_llm_connection(self):
-        """Test the LLM server connection"""
-        from ...infrastructure.llm.processor import TextProcessor
-        
-        cursor = self.cursor()
-        cursor.setShape(Qt.WaitCursor)
-        self.setCursor(cursor)
-        
-        try:
-            # Get credentials if provided
-            username = self.llm_username_edit.text().strip() if hasattr(self, 'llm_username_edit') else ""
-            password = self.llm_password_edit.text() if hasattr(self, 'llm_password_edit') else ""
-            
-            api_url = self.llm_api_url_edit.text().strip().rstrip('/')
-            if not api_url:
-                api_url = "http://localhost:11434/v1"
-            if not api_url.endswith('/v1'):
-                api_url = f"{api_url}/v1"
-            
-            # Test basic connectivity
-            import requests
-            from requests.auth import HTTPBasicAuth
-            
-            auth = HTTPBasicAuth(username, password) if username and password else None
-            
-            # Get base URL (strip /v1 if present)
-            base_url = api_url[:-3] if api_url.endswith('/v1') else api_url
-            
+    def _llm_request_params(self):
+        """Normalized API URL and auth from the current form values."""
+        from requests.auth import HTTPBasicAuth
+
+        api_url = self.llm_api_url_edit.text().strip().rstrip('/')
+        if not api_url:
+            api_url = "http://localhost:11434/v1"
+        if not api_url.endswith('/v1'):
+            api_url = f"{api_url}/v1"
+
+        username = self.llm_username_edit.text().strip()
+        password = self.llm_password_edit.text()
+        auth = HTTPBasicAuth(username, password) if username and password else None
+        return api_url, auth
+
+    def _run_async(self, work, on_done, title: str, text: str):
+        """Run `work` in a background thread with a modal progress dialog.
+
+        Network calls must never run on the Qt main thread — a slow or
+        unreachable server would freeze the whole window. `on_done(ok, value)`
+        is called on the main thread with (True, result) or (False, exception).
+        """
+        import threading
+        from PySide6.QtWidgets import QProgressDialog
+
+        progress = QProgressDialog(text, "Cancel", 0, 0, self)
+        progress.setWindowTitle(title)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+
+        state = {"result": None, "cancelled": False}
+
+        def runner():
             try:
-                # First check basic connectivity
-                response = requests.get(base_url, timeout=5, auth=auth, allow_redirects=True)
-                status_code = response.status_code
-                
-                if status_code in [401, 403]:
-                    QMessageBox.warning(
-                        self,
-                        "Authentication Required",
-                        f"Server responded with status {status_code}.\n\nThe server is reachable but requires authentication.\nPlease check your username and password.",
-                        QMessageBox.Ok
-                    )
-                    return
-                
-                # Try to get available models and populate dropdown
-                models = []
-                models_list = ""
+                state["result"] = (True, work())
+            except Exception as e:
+                state["result"] = (False, e)
+
+        def poll():
+            if state["cancelled"]:
+                return
+            if state["result"] is None:
+                QTimer.singleShot(200, poll)
+                return
+            progress.close()
+            ok, value = state["result"]
+            on_done(ok, value)
+
+        def on_cancelled():
+            state["cancelled"] = True
+            progress.close()
+
+        progress.canceled.connect(on_cancelled)
+        threading.Thread(target=runner, daemon=True, name="SettingsNetworkTask").start()
+        QTimer.singleShot(200, poll)
+
+    def _test_llm_connection(self):
+        """Test the LLM server connection and load available models."""
+        import requests
+
+        api_url, auth = self._llm_request_params()
+        base_url = api_url[:-3] if api_url.endswith('/v1') else api_url
+
+        def work():
+            response = requests.get(base_url, timeout=5, auth=auth, allow_redirects=True)
+            status_code = response.status_code
+
+            models = []
+            if status_code not in (401, 403):
                 try:
                     models_response = requests.get(f"{api_url}/models", timeout=5, auth=auth)
                     if models_response.status_code == 200:
                         data = models_response.json()
-                        models = [m.get("id", "unknown") for m in data.get("data", []) if m.get("id")]
-                        if models:
-                            models_list = "\n\nAvailable models:\n• " + "\n• ".join(models[:10])
-                            if len(models) > 10:
-                                models_list += f"\n... and {len(models) - 10} more"
-                except:
+                        models = [m.get("id") for m in data.get("data", []) if m.get("id")]
+                except requests.exceptions.RequestException:
                     pass  # Models endpoint might not exist, that's okay
-                
-                # Populate the model dropdown
-                if models and hasattr(self, 'llm_model_combo'):
-                    current_model = self.llm_model_combo.currentText()
-                    self.llm_model_combo.clear()
-                    self.llm_model_combo.addItems(models)
-                    # Restore previous selection if it exists in the list
-                    if current_model in models:
-                        self.llm_model_combo.setCurrentText(current_model)
-                    elif models:
-                        self.llm_model_combo.setCurrentIndex(0)
-                    models_list += "\n\n✓ Model dropdown has been populated!"
-                
-                QMessageBox.information(
-                    self,
-                    "Connection Successful",
-                    f"Successfully connected to LLM server!\n\nURL: {api_url}\nStatus: {status_code}{models_list}",
-                    QMessageBox.Ok
-                )
-                    
-            except requests.exceptions.ConnectionError:
-                QMessageBox.critical(
-                    self,
-                    "Connection Failed",
-                    f"Could not connect to {base_url}\n\nPlease check:\n- The URL is correct\n- The server is running\n- Any firewalls or proxies",
-                    QMessageBox.Ok
-                )
-            except requests.exceptions.Timeout:
+            return status_code, models
+
+        def on_done(ok, value):
+            if not ok:
+                if isinstance(value, requests.exceptions.Timeout):
+                    QMessageBox.warning(
+                        self,
+                        "Connection Timeout",
+                        f"Connection to {base_url} timed out after 5 seconds.\n\nThe server may be slow or unreachable.",
+                        QMessageBox.Ok
+                    )
+                elif isinstance(value, requests.exceptions.ConnectionError):
+                    QMessageBox.critical(
+                        self,
+                        "Connection Failed",
+                        f"Could not connect to {base_url}\n\nPlease check:\n- The URL is correct\n- The server is running\n- Any firewalls or proxies",
+                        QMessageBox.Ok
+                    )
+                else:
+                    QMessageBox.critical(
+                        self,
+                        "Connection Error",
+                        f"Error connecting to LLM server: {value}",
+                        QMessageBox.Ok
+                    )
+                return
+
+            status_code, models = value
+            if status_code in (401, 403):
                 QMessageBox.warning(
                     self,
-                    "Connection Timeout",
-                    f"Connection to {base_url} timed out after 5 seconds.\n\nThe server may be slow or unreachable.",
+                    "Authentication Required",
+                    f"Server responded with status {status_code}.\n\nThe server is reachable but requires authentication.\nPlease check your username and password.",
                     QMessageBox.Ok
                 )
-        except Exception as e:
-            QMessageBox.critical(
+                return
+
+            models_list = ""
+            if models:
+                models_list = "\n\nAvailable models:\n• " + "\n• ".join(models[:10])
+                if len(models) > 10:
+                    models_list += f"\n... and {len(models) - 10} more"
+
+                current_model = self.llm_model_combo.currentText()
+                self.llm_model_combo.clear()
+                self.llm_model_combo.addItems(models)
+                if current_model in models:
+                    self.llm_model_combo.setCurrentText(current_model)
+                else:
+                    self.llm_model_combo.setCurrentIndex(0)
+                models_list += "\n\n✓ Model dropdown has been populated!"
+
+            QMessageBox.information(
                 self,
-                "Connection Error",
-                f"Error connecting to LLM server: {str(e)}",
+                "Connection Successful",
+                f"Successfully connected to LLM server!\n\nURL: {api_url}\nStatus: {status_code}{models_list}",
                 QMessageBox.Ok
             )
-        finally:
-            cursor.setShape(Qt.ArrowCursor)
-            self.setCursor(cursor)
+
+        self._run_async(work, on_done, "Testing Connection", f"Connecting to {base_url}...")
 
     def _warm_up_model(self):
         """Send a test request to warm up the model (load it into VRAM)"""
         import requests
-        from requests.auth import HTTPBasicAuth
-        from PySide6.QtWidgets import QProgressDialog
-        from PySide6.QtCore import QTimer
-        import threading
-        
-        model = self.llm_model_combo.currentText().strip() if hasattr(self, 'llm_model_combo') else ""
+
+        model = self.llm_model_combo.currentText().strip()
         if not model:
             QMessageBox.warning(
                 self,
@@ -1032,105 +1177,55 @@ class SettingsWindow(QMainWindow):
                 QMessageBox.Ok
             )
             return
-        
-        api_url = self.llm_api_url_edit.text().strip()
-        if not api_url:
+
+        api_url, auth = self._llm_request_params()
+
+        def work():
+            response = requests.post(
+                f"{api_url}/chat/completions",
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": "Hello"}],
+                    "max_tokens": 5
+                },
+                timeout=120,
+                auth=auth
+            )
+            return response
+
+        def on_done(ok, value):
+            if ok and value.status_code == 200:
+                QMessageBox.information(
+                    self,
+                    "Model Ready",
+                    f"Model '{model}' is now warmed up and ready to use!",
+                    QMessageBox.Ok
+                )
+                return
+
+            if not ok:
+                if isinstance(value, requests.exceptions.Timeout):
+                    message = ("Request timed out after 2 minutes.\n"
+                               "The model may be very large or the server is slow.")
+                elif isinstance(value, requests.exceptions.ConnectionError):
+                    message = "Could not connect to the server."
+                else:
+                    message = str(value)
+            else:
+                message = f"Error: {value.text[:200] if value.text else f'Status {value.status_code}'}"
+
             QMessageBox.warning(
                 self,
-                "No API URL",
-                "Please enter the API URL first.",
+                "Warm Up Failed",
+                f"Failed to warm up model '{model}':\n\n{message}",
                 QMessageBox.Ok
             )
-            return
-        
-        # Get credentials
-        username = self.llm_username_edit.text().strip() if hasattr(self, 'llm_username_edit') else ""
-        password = self.llm_password_edit.text() if hasattr(self, 'llm_password_edit') else ""
-        auth = HTTPBasicAuth(username, password) if username and password else None
-        
-        # Create progress dialog
-        progress = QProgressDialog(
-            f"Warming up model '{model}'...\n\nThis may take 1-2 minutes on first load.",
-            "Cancel",
-            0, 0,
-            self
+
+        self._run_async(
+            work, on_done,
+            "Warming Up Model",
+            f"Warming up model '{model}'...\n\nThis may take 1-2 minutes on first load."
         )
-        progress.setWindowTitle("Warming Up Model")
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.setValue(0)
-        progress.show()
-        
-        # Result storage
-        self._warmup_result = None
-        self._warmup_cancelled = False
-        
-        def do_warmup():
-            """Run the warmup request in background thread"""
-            try:
-                response = requests.post(
-                    f"{api_url}/chat/completions",
-                    json={
-                        "model": model,
-                        "messages": [{"role": "user", "content": "Hello"}],
-                        "max_tokens": 5
-                    },
-                    timeout=120,
-                    auth=auth
-                )
-                
-                if response.status_code == 200:
-                    self._warmup_result = (True, "Model warmed up successfully!")
-                else:
-                    error_msg = response.text[:200] if response.text else f"Status {response.status_code}"
-                    self._warmup_result = (False, f"Error: {error_msg}")
-            except requests.exceptions.Timeout:
-                self._warmup_result = (False, "Request timed out after 2 minutes.\nThe model may be very large or the server is slow.")
-            except requests.exceptions.ConnectionError:
-                self._warmup_result = (False, "Could not connect to the server.")
-            except Exception as e:
-                self._warmup_result = (False, str(e))
-        
-        def check_result():
-            """Check if warmup is done (called by timer)"""
-            if self._warmup_cancelled:
-                progress.close()
-                return
-            
-            if self._warmup_result is not None:
-                progress.close()
-                success, message = self._warmup_result
-                
-                if success:
-                    QMessageBox.information(
-                        self,
-                        "Model Ready",
-                        f"Model '{model}' is now warmed up and ready to use!",
-                        QMessageBox.Ok
-                    )
-                else:
-                    QMessageBox.warning(
-                        self,
-                        "Warm Up Failed",
-                        f"Failed to warm up model '{model}':\n\n{message}",
-                        QMessageBox.Ok
-                    )
-            else:
-                # Still running, check again in 500ms
-                QTimer.singleShot(500, check_result)
-        
-        def on_cancelled():
-            self._warmup_cancelled = True
-            progress.close()
-        
-        progress.canceled.connect(on_cancelled)
-        
-        # Start background thread
-        thread = threading.Thread(target=do_warmup, daemon=True)
-        thread.start()
-        
-        # Start checking for result
-        QTimer.singleShot(500, check_result)
 
     def closeEvent(self, event):
         """Handle the window close event"""
@@ -1139,9 +1234,10 @@ class SettingsWindow(QMainWindow):
             self.save_requested = False  # Reset for next time
             event.accept()
             return
-            
-        # If no changes were made, just close without confirmation
-        if not self.settings_changed:
+
+        # If nothing actually differs from the state the window opened with,
+        # close without nagging
+        if not self._has_unsaved_changes():
             event.accept()
             return
             
@@ -1248,15 +1344,18 @@ class SettingsWindow(QMainWindow):
     def _update_hotkey_displays(self):
         """Update the hotkey displays with user-friendly representations"""
         import platform
-        if platform.system() == "Darwin":
-            if hasattr(self, 'record_hotkey_edit'):
-                key_seq = self.record_hotkey_edit.keySequence()
-                friendly_display = self.get_macos_friendly_key_display(key_seq)
-                if hasattr(self, 'record_hotkey_display') and friendly_display:
-                    self.record_hotkey_display.setText(f"Current: {friendly_display}")
-                    
-            if hasattr(self, 'quit_hotkey_edit'):
-                key_seq = self.quit_hotkey_edit.keySequence()
-                friendly_display = self.get_macos_friendly_key_display(key_seq)
-                if hasattr(self, 'quit_hotkey_display') and friendly_display:
-                    self.quit_hotkey_display.setText(f"Current: {friendly_display}") 
+        if platform.system() != "Darwin":
+            return
+
+        pairs = [
+            ('record_hotkey_edit', 'record_hotkey_display'),
+            ('quit_hotkey_edit', 'quit_hotkey_display'),
+            ('process_hotkey_edit', 'process_hotkey_display'),
+        ]
+        for edit_attr, display_attr in pairs:
+            edit = getattr(self, edit_attr, None)
+            display = getattr(self, display_attr, None)
+            if edit is None or display is None:
+                continue
+            friendly_display = self.get_macos_friendly_key_display(edit.keySequence())
+            display.setText(f"Current: {friendly_display}" if friendly_display else "")

@@ -1,6 +1,28 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 from PySide6.QtGui import QKeySequence
+
+DEFAULT_LLM_PROMPT = """You are an intelligent text processing assistant. The user has dictated text using voice transcription.
+
+Your task:
+1. If the text contains instructions like "make this more descriptive", "enhance this", "add adjectives", "rewrite this professionally", etc., apply those instructions to the REST of the text (the part BEFORE the instruction).
+2. If there are no instructions, simply fix grammar, spelling, and punctuation errors.
+3. Remove any meta-instructions from the final output (phrases like "can you...", "make this...", etc.).
+4. Output ONLY the final processed text - no explanations, no preambles.
+
+Examples:
+- Input: "I need error handling. Make this more professional."
+  Output: "We require comprehensive error handling mechanisms."
+
+- Input: "The project is delayed. Add more descriptive words."
+  Output: "The critical project timeline has experienced significant delays."
+
+- Input: "I went to the store yesterday"
+  Output: "I went to the store yesterday."
+
+Text to process:
+
+{text}"""
 
 @dataclass
 class HotkeySettings:
@@ -26,27 +48,7 @@ class LLMSettings:
     api_url: str = "http://localhost:11434/v1"  # Default to Ollama
     model: str = "llama3.2"
     enabled: bool = False
-    custom_prompt: str = """You are an intelligent text processing assistant. The user has dictated text using voice transcription.
-
-Your task:
-1. If the text contains instructions like "make this more descriptive", "enhance this", "add adjectives", "rewrite this professionally", etc., apply those instructions to the REST of the text (the part BEFORE the instruction).
-2. If there are no instructions, simply fix grammar, spelling, and punctuation errors.
-3. Remove any meta-instructions from the final output (phrases like "can you...", "make this...", etc.).
-4. Output ONLY the final processed text - no explanations, no preambles.
-
-Examples:
-- Input: "I need error handling. Make this more professional."
-  Output: "We require comprehensive error handling mechanisms."
-
-- Input: "The project is delayed. Add more descriptive words."
-  Output: "The critical project timeline has experienced significant delays."
-
-- Input: "I went to the store yesterday"
-  Output: "I went to the store yesterday."
-
-Text to process:
-
-{text}"""
+    custom_prompt: str = DEFAULT_LLM_PROMPT
     # Authentication for external LLM endpoint (Basic Auth)
     api_username: str = ""  # Username for HTTP Basic Auth
     api_password: str = ""  # Password for HTTP Basic Auth
@@ -64,10 +66,11 @@ class Settings:
     hotkeys: HotkeySettings
     audio: AudioSettings
     transcription: TranscriptionSettings
-    llm: LLMSettings = None
-    appearance: AppearanceSettings = None
-    
+    llm: LLMSettings = field(default_factory=LLMSettings)
+    appearance: AppearanceSettings = field(default_factory=AppearanceSettings)
+
     def __post_init__(self):
+        # Guard against callers that explicitly pass None for a section
         if self.llm is None:
             self.llm = LLMSettings()
         if self.appearance is None:

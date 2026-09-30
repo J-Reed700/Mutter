@@ -11,7 +11,7 @@ import platform
 import os
 
 # Domain imports
-from ...domain.settings import Settings
+from ...domain.settings import Settings, DEFAULT_LLM_PROMPT
 from ...domain.entities.recording import Recording
 from ...domain.entities.transcription import Transcription
 from ...domain.value_objects.audio_metadata import AudioMetadata
@@ -647,7 +647,7 @@ class RecordingService(QObject):
         
         try:
             # Get the custom prompt from settings
-            prompt_template = self.settings.llm.custom_prompt or "Fix any grammar, spelling, and punctuation errors in the following text. Keep the meaning exactly the same. Only output the corrected text, nothing else:\n\n{text}"
+            prompt_template = self.settings.llm.custom_prompt or DEFAULT_LLM_PROMPT
             model = self.settings.llm.model or "llama3.2"
             
             logger.info(f"Processing text with LLM (model: {model})")
@@ -820,7 +820,8 @@ class RecordingService(QObject):
             self.text_processor = None
         
         # Update audio recorder settings if they changed
-        if (self.audio_recorder.sample_rate != self.settings.audio.sample_rate or
+        if self.audio_recorder and (
+            self.audio_recorder.sample_rate != self.settings.audio.sample_rate or
             self.audio_recorder.channels != self.settings.audio.channels or
             self.audio_recorder.device != self.settings.audio.input_device):
             

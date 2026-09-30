@@ -5,13 +5,7 @@ infrastructure services and domain entities.
 
 import logging
 import platform
-import sys
 import threading
-
-try:
-    import resource  # Unix-only; unavailable on Windows
-except ImportError:
-    resource = None
 from typing import Optional, Dict, Any
 
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
@@ -22,6 +16,7 @@ from ..infrastructure.audio.recorder import AudioRecorder
 from ..infrastructure.transcription.transcriber import Transcriber
 from ..infrastructure.llm.processor import TextProcessor
 from ..infrastructure.recording.recording_service import RecordingService
+from ..infrastructure.diagnostics import process_memory
 
 
 logger = logging.getLogger(__name__)
@@ -41,13 +36,22 @@ class ServiceManager(QObject):
     # Signal to report health check results from background thread
     health_check_complete = Signal(bool, bool)  # audio_healthy, transcriber_healthy
 
+    # Memory watchdog dumps Python object-type counts each time RSS has grown
+    # by this much since the previous dump.
+    MEMWATCH_DUMP_STEP_MB = 512
+
     def __init__(self):
         """Initialize the service manager and all infrastructure services."""
         super().__init__()
         logger.info("Initializing service manager")
-        
+
         # Connect health check signal
         self.health_check_complete.connect(self._on_health_check_complete)
+
+        # Memory at the last object-type dump (None until the first snapshot)
+        self._memwatch_last_dump_mb = None
+        self._memwatch_tick = 0
+        self._memwatch_obj_count = 0
         
         # Core dependencies
         self._settings_repository = None
@@ -92,34 +96,63 @@ class ServiceManager(QObject):
             self._recording_service.recording_failed.connect(self._handle_recording_failure)
 
     def _log_memory_snapshot(self):
-        """Log RSS, thread count, and Python object count for leak diagnostics."""
-        if resource is None:
-            return
-        try:
-            rusage = resource.getrusage(resource.RUSAGE_SELF)
-            # macOS reports ru_maxrss in bytes; Linux reports in KB.
-            if sys.platform == "darwin":
-                rss_mb = rusage.ru_maxrss / (1024 * 1024)
-            else:
-                rss_mb = rusage.ru_maxrss / 1024
+        """Log process memory, thread count, and Python object count for leak diagnostics.
 
-            import gc
-            obj_count = len(gc.get_objects())
+        Works on Windows, macOS and Linux (see process_memory). Also records what
+        the recorder was doing so a growth step can be tied to an activity.
+        """
+        try:
+            mem = process_memory.sample()
+            if mem is None:
+                return
+
             thread_count = threading.active_count()
+            recording = bool(self._recording_service and self._recording_service.is_recording)
+            finalizing = bool(self._recording_service and self._recording_service.is_busy() and not recording)
+            recorder = self._audio_recorder
+            buffered_mb = (recorder._audio_data_size / (1024 * 1024)) if recorder else 0.0
+
+            # Walking every Python object touches the whole heap, which under
+            # memory pressure forces it all to be decompressed; do it once a
+            # minute rather than every snapshot.
+            self._memwatch_tick += 1
+            import gc
+            if self._memwatch_tick % 6 == 1:
+                self._memwatch_obj_count = len(gc.get_objects())
 
             logger.warning(
-                f"[MEMWATCH] RSS={rss_mb:.1f}MB  threads={thread_count}  py_objects={obj_count}"
+                f"[MEMWATCH] {mem.describe()}  threads={thread_count}  py_objects={self._memwatch_obj_count}  "
+                f"recording={recording}  finalizing={finalizing}  audio_buffer={buffered_mb:.1f}MB"
             )
 
-            # If we're deep into runaway territory, dump the top object types so we
-            # can see which allocator is growing before the OS kills us.
-            if rss_mb > 2000:
+            # Whenever memory has stepped up noticeably since the last dump,
+            # record *where* it went: the top Python object types (a leak of
+            # ordinary objects) and, on macOS, the kernel's per-region
+            # breakdown (malloc vs. IOKit/CoreAudio/GPU/stacks), so the log
+            # names the allocator before the OS runs out of memory. Uses the
+            # task-manager figure (footprint on macOS), not RSS: pages the
+            # compressor has swallowed leave RSS but still count against us.
+            if self._memwatch_last_dump_mb is None:
+                self._memwatch_last_dump_mb = mem.headline_mb
+            elif mem.headline_mb - self._memwatch_last_dump_mb >= self.MEMWATCH_DUMP_STEP_MB:
+                self._memwatch_last_dump_mb = mem.headline_mb
                 from collections import Counter
                 type_counts = Counter(type(o).__name__ for o in gc.get_objects())
                 top = type_counts.most_common(15)
-                logger.warning(f"[MEMWATCH] top object types: {top}")
+                logger.warning(f"[MEMWATCH] memory grew to {mem.headline_mb:.0f}MB; top object types: {top}")
+                threading.Thread(target=self._log_memory_regions, daemon=True, name="MemRegionDump").start()
         except Exception as e:
             logger.debug(f"memory snapshot failed: {e}")
+
+    @staticmethod
+    def _log_memory_regions():
+        """Log the OS's per-region memory breakdown for this process (macOS only)."""
+        try:
+            summary = process_memory.region_summary()
+            if summary:
+                logger.warning(f"[MEMWATCH] memory regions: {summary}")
+        except Exception as e:
+            logger.debug(f"memory region dump failed: {e}")
 
     def _check_health(self):
         """Check health of critical services in a background thread."""

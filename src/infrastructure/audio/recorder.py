@@ -10,8 +10,8 @@ from datetime import datetime
 import threading
 import logging
 import time
-import sys
-import weakref
+
+from ..diagnostics import process_memory
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,11 @@ class AudioRecorder:
     
     # Maximum audio data size in bytes (approximately)
     MAX_AUDIO_DATA_SIZE = 100 * 1024 * 1024  # 100 MB
-    
+
+    # How long a finished session's thread may stay stuck closing its stream
+    # before is_healthy() reports the recorder as broken (seconds)
+    ZOMBIE_THREAD_TIMEOUT = 5.0
+
     def __init__(self, sample_rate=16000, channels=1, device=None):
         """Initialize the audio recorder.
         
@@ -55,6 +59,8 @@ class AudioRecorder:
         self._record_thread = None
         self._stop_event = threading.Event()
         self._recording_start_time: Optional[float] = None
+        # Set when a session's thread failed to finish stream teardown in time
+        self._zombie_since: Optional[float] = None
 
         # Invoked (from the recording thread) when recording stops on its own:
         # max duration/size reached or unrecoverable device failure. Lets the
@@ -277,10 +283,27 @@ class AudioRecorder:
     
     def is_healthy(self) -> bool:
         """Check if the audio recorder is healthy and the device is available.
-        
+
         Returns:
             bool: True if healthy, False otherwise
         """
+        # A previous session's thread that never finished tearing down its
+        # stream (PortAudio/CoreAudio hung in stop/close) blocks every new
+        # recording with "still shutting down". Report unhealthy so the
+        # service manager replaces this recorder with a fresh one instead of
+        # leaving recording broken until the app is restarted.
+        if self._zombie_since is not None:
+            with self._lock:
+                thread = self._record_thread
+                active = self.recording
+            if thread is not None and thread.is_alive() and not active:
+                stuck_for = time.monotonic() - self._zombie_since
+                if stuck_for > self.ZOMBIE_THREAD_TIMEOUT:
+                    logger.error(f"Recording thread stuck in stream teardown for {stuck_for:.0f}s - recorder unhealthy")
+                    return False
+            else:
+                self._zombie_since = None
+
         try:
             # If using default device (None), it's always "healthy" unless system has no audio
             if self.device is None or self.device == 'default':
@@ -558,10 +581,12 @@ class AudioRecorder:
                 logger.error("Recording thread did not terminate in time; "
                              "proceeding with buffered audio (stream may still be closing)")
                 # Keep the zombie visible so start_recording waits for it (or
-                # refuses) instead of racing its still-open stream
+                # refuses) instead of racing its still-open stream; is_healthy()
+                # flags the recorder for replacement if it never finishes
                 with self._lock:
                     if self._record_thread is None:
                         self._record_thread = thread
+                    self._zombie_since = time.monotonic()
 
         # Snapshot and detach the buffer under the lock
         with self._lock:
@@ -642,34 +667,24 @@ class AudioRecorder:
                 logger.debug(f"Cleared audio buffer ({chunk_count} chunks freed)")
     
     def _log_memory_usage(self, chunk_count: int):
-        """Log approximate memory usage of the audio buffer."""
+        """Log the audio buffer size and process memory during a recording.
+
+        Uses the tracked byte count rather than a per-chunk estimate: the
+        host API picks the block size (about 10 ms on CoreAudio, not 100 ms),
+        so chunk counts alone say nothing reliable about duration or size.
+        """
         try:
-            # Estimate memory usage
-            # Each chunk is typically (frames, channels) float32 array
-            # At 16kHz, ~0.1s per chunk = 1600 samples * 4 bytes = 6.4KB per chunk
-            estimated_chunk_size_bytes = 1600 * self.channels * 4  # float32 = 4 bytes
-            
-            memory_in_buffer_mb = (len(self._audio_data) * estimated_chunk_size_bytes) / (1024 * 1024)
-            
-            duration_seconds = chunk_count * 0.1  # ~0.1s per chunk
-            duration_minutes = duration_seconds / 60
-            
+            memory_in_buffer_mb = self._audio_data_size / (1024 * 1024)
+            bytes_per_second = self.sample_rate * self.channels * 4  # float32
+            duration_minutes = (self._audio_data_size / bytes_per_second / 60) if bytes_per_second else 0.0
+
             logger.info(f"Recording stats: {duration_minutes:.1f} min, "
-                       f"~{memory_in_buffer_mb:.1f}MB in memory, "
+                       f"{memory_in_buffer_mb:.1f}MB in memory, "
                        f"{chunk_count} total chunks")
-            
-            # Also log actual process memory if available
-            try:
-                import resource
-                rusage = resource.getrusage(resource.RUSAGE_SELF)
-                # On macOS, ru_maxrss is in bytes; on Linux it's in KB
-                if sys.platform == 'darwin':
-                    rss_mb = rusage.ru_maxrss / (1024 * 1024)
-                else:
-                    rss_mb = rusage.ru_maxrss / 1024
-                logger.info(f"Process memory (RSS): ~{rss_mb:.1f}MB")
-            except ImportError:
-                pass  # resource module not available on Windows
+
+            mem = process_memory.sample()
+            if mem is not None:
+                logger.info(f"Process memory: {mem.describe()}")
         except Exception as e:
             logger.debug(f"Error logging memory usage: {e}")
     
@@ -791,6 +806,8 @@ class AudioRecorder:
                 with self._lock:
                     if self._record_thread is None:
                         self._record_thread = thread
+                    if self._zombie_since is None:
+                        self._zombie_since = time.monotonic()
 
         # Clear audio data
         self._cleanup_audio_data()
